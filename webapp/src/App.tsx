@@ -43,6 +43,7 @@ import {
   getPreloginKdfConfig,
   getProfile,
   getAuthorizedDevices,
+  getCurrentDeviceIdentifier,
   getSetupStatus,
   getSends,
   getTotpStatus,
@@ -60,6 +61,7 @@ import {
   saveSession,
   setTotp,
   setUserStatus,
+  deleteAllAuthorizedDevices,
   deleteAuthorizedDevice,
   uploadCipherAttachment,
   updateCipher,
@@ -969,8 +971,19 @@ export default function App() {
 
   async function removeDeviceAction(device: AuthorizedDevice) {
     await deleteAuthorizedDevice(authedFetch, device.identifier);
+    if (device.identifier === getCurrentDeviceIdentifier()) {
+      pushToast('success', t('txt_device_removed'));
+      logoutNow();
+      return;
+    }
     await authorizedDevicesQuery.refetch();
     pushToast('success', t('txt_device_removed'));
+  }
+
+  async function removeAllDevicesAction() {
+    await deleteAllAuthorizedDevices(authedFetch);
+    pushToast('success', t('txt_all_devices_removed'));
+    logoutNow();
   }
 
   async function createVaultItem(draft: VaultDraft, attachments: File[] = []) {
@@ -2004,7 +2017,7 @@ export default function App() {
                       onRemoveDevice={(device) => {
                         setConfirm({
                           title: t('txt_remove_device'),
-                          message: t('txt_remove_device_name_and_clear_its_2fa_trust', { name: device.name }),
+                          message: t('txt_remove_device_and_sign_out_name', { name: device.name }),
                           danger: true,
                           onConfirm: () => {
                             setConfirm(null);
@@ -2020,6 +2033,17 @@ export default function App() {
                           onConfirm: () => {
                             setConfirm(null);
                             void revokeAllDeviceTrustAction();
+                          },
+                        });
+                      }}
+                      onRemoveAll={() => {
+                        setConfirm({
+                          title: t('txt_remove_all_devices'),
+                          message: t('txt_remove_all_devices_and_sign_out_all_sessions'),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void removeAllDevicesAction();
                           },
                         });
                       }}

@@ -119,6 +119,10 @@ function getOrCreateDeviceIdentifier(): string {
   return next;
 }
 
+export function getCurrentDeviceIdentifier(): string {
+  return (localStorage.getItem(DEVICE_IDENTIFIER_KEY) || '').trim();
+}
+
 function guessDeviceName(): string {
   const ua = (typeof navigator !== 'undefined' ? navigator.userAgent : '').toLowerCase();
   const platform = (typeof navigator !== 'undefined' ? navigator.platform : '').trim();
@@ -770,6 +774,13 @@ export async function deleteAuthorizedDevice(
 ): Promise<void> {
   const resp = await authedFetch(`/api/devices/${encodeURIComponent(deviceIdentifier)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error('Failed to remove device');
+}
+
+export async function deleteAllAuthorizedDevices(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>
+): Promise<void> {
+  const resp = await authedFetch('/api/devices', { method: 'DELETE' });
+  if (!resp.ok) throw new Error('Failed to remove all devices');
 }
 
 export async function listAdminUsers(authedFetch: (input: string, init?: RequestInit) => Promise<Response>): Promise<AdminUser[]> {

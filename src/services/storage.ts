@@ -1,4 +1,4 @@
-import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, SendAuthType, TrustedDeviceTokenSummary } from '../types';
+import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, SendAuthType, TrustedDeviceTokenSummary, RefreshTokenRecord } from '../types';
 import { LIMITS } from '../config/limits';
 
 const TWO_FACTOR_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -52,9 +52,11 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'ALTER TABLE sends ADD COLUMN emails TEXT',
 
   'CREATE TABLE IF NOT EXISTS refresh_tokens (' +
-  'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, ' +
+  'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL, device_identifier TEXT, device_session_stamp TEXT, ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
   'CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)',
+  'ALTER TABLE refresh_tokens ADD COLUMN device_identifier TEXT',
+  'ALTER TABLE refresh_tokens ADD COLUMN device_session_stamp TEXT',
 
   'CREATE TABLE IF NOT EXISTS invites (' +
   'code TEXT PRIMARY KEY, created_by TEXT NOT NULL, used_by TEXT, expires_at TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
@@ -70,11 +72,14 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created ON audit_logs(actor_user_id, created_at)',
 
   'CREATE TABLE IF NOT EXISTS devices (' +
-  'user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, name TEXT NOT NULL, type INTEGER NOT NULL, ' +
+  'user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, name TEXT NOT NULL, type INTEGER NOT NULL, session_stamp TEXT, banned INTEGER NOT NULL DEFAULT 0, banned_at TEXT, ' +
   'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
   'PRIMARY KEY (user_id, device_identifier), ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
   'CREATE INDEX IF NOT EXISTS idx_devices_user_updated ON devices(user_id, updated_at)',
+  'ALTER TABLE devices ADD COLUMN session_stamp TEXT',
+  'ALTER TABLE devices ADD COLUMN banned INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE devices ADD COLUMN banned_at TEXT',
 
   'CREATE TABLE IF NOT EXISTS trusted_two_factor_device_tokens (' +
   'token TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_identifier TEXT NOT NULL, expires_at INTEGER NOT NULL, ' +
@@ -749,40 +754,57 @@ export class StorageService {
 
   // --- Refresh tokens ---
 
-  async saveRefreshToken(token: string, userId: string, expiresAtMs?: number): Promise<void> {
+  async saveRefreshToken(
+    token: string,
+    userId: string,
+    expiresAtMs?: number,
+    deviceIdentifier?: string | null,
+    deviceSessionStamp?: string | null
+  ): Promise<void> {
     const expiresAt = expiresAtMs ?? (Date.now() + LIMITS.auth.refreshTokenTtlMs);
     await this.maybeCleanupExpiredRefreshTokens(Date.now());
     const tokenKey = await this.refreshTokenKey(token);
     await this.db.prepare(
-      'INSERT INTO refresh_tokens(token, user_id, expires_at) VALUES(?, ?, ?) ' +
-      'ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at'
+      'INSERT INTO refresh_tokens(token, user_id, expires_at, device_identifier, device_session_stamp) VALUES(?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id, expires_at=excluded.expires_at, device_identifier=excluded.device_identifier, device_session_stamp=excluded.device_session_stamp'
     )
-      .bind(tokenKey, userId, expiresAt)
+      .bind(tokenKey, userId, expiresAt, deviceIdentifier ?? null, deviceSessionStamp ?? null)
       .run();
   }
 
-  async getRefreshTokenUserId(token: string): Promise<string | null> {
+  async getRefreshTokenRecord(token: string): Promise<RefreshTokenRecord | null> {
     const now = Date.now();
     await this.maybeCleanupExpiredRefreshTokens(now);
     const tokenKey = await this.refreshTokenKey(token);
 
-    let row = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+    let row = await this.db.prepare('SELECT user_id, expires_at, device_identifier, device_session_stamp FROM refresh_tokens WHERE token = ?')
       .bind(tokenKey)
-      .first<{ user_id: string; expires_at: number }>();
+      .first<{ user_id: string; expires_at: number; device_identifier: string | null; device_session_stamp: string | null }>();
 
     if (!row) {
-      const legacyRow = await this.db.prepare('SELECT user_id, expires_at FROM refresh_tokens WHERE token = ?')
+      const legacyRow = await this.db.prepare('SELECT user_id, expires_at, device_identifier, device_session_stamp FROM refresh_tokens WHERE token = ?')
         .bind(token)
-        .first<{ user_id: string; expires_at: number }>();
+        .first<{ user_id: string; expires_at: number; device_identifier: string | null; device_session_stamp: string | null }>();
 
       if (legacyRow) {
         if (legacyRow.expires_at && legacyRow.expires_at < now) {
           await this.deleteRefreshToken(token);
           return null;
         }
-        await this.saveRefreshToken(token, legacyRow.user_id, legacyRow.expires_at);
+        await this.saveRefreshToken(
+          token,
+          legacyRow.user_id,
+          legacyRow.expires_at,
+          legacyRow.device_identifier ?? null,
+          legacyRow.device_session_stamp ?? null
+        );
         await this.db.prepare('DELETE FROM refresh_tokens WHERE token = ?').bind(token).run();
-        return legacyRow.user_id;
+        return {
+          userId: legacyRow.user_id,
+          expiresAt: legacyRow.expires_at,
+          deviceIdentifier: legacyRow.device_identifier ?? null,
+          deviceSessionStamp: legacyRow.device_session_stamp ?? null,
+        };
       }
     }
 
@@ -791,7 +813,17 @@ export class StorageService {
       await this.deleteRefreshToken(token);
       return null;
     }
-    return row.user_id;
+    return {
+      userId: row.user_id,
+      expiresAt: row.expires_at,
+      deviceIdentifier: row.device_identifier ?? null,
+      deviceSessionStamp: row.device_session_stamp ?? null,
+    };
+  }
+
+  async getRefreshTokenUserId(token: string): Promise<string | null> {
+    const record = await this.getRefreshTokenRecord(token);
+    return record?.userId ?? null;
   }
 
   async deleteRefreshToken(token: string): Promise<void> {
@@ -915,8 +947,17 @@ export class StorageService {
     return (res.results || []).map(row => this.mapSendRow(row));
   }
 
-  async deleteRefreshTokensByUserId(userId: string): Promise<void> {
-    await this.db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').bind(userId).run();
+  async deleteRefreshTokensByUserId(userId: string): Promise<number> {
+    const result = await this.db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').bind(userId).run();
+    return Number(result.meta.changes ?? 0);
+  }
+
+  async deleteRefreshTokensByDevice(userId: string, deviceIdentifier: string): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM refresh_tokens WHERE user_id = ? AND device_identifier = ?')
+      .bind(userId, deviceIdentifier)
+      .run();
+    return Number(result.meta.changes ?? 0);
   }
 
   // Keep a short overlap window for rotated refresh token to reduce
@@ -946,13 +987,14 @@ export class StorageService {
 
   // --- Devices ---
 
-  async upsertDevice(userId: string, deviceIdentifier: string, name: string, type: number): Promise<void> {
+  async upsertDevice(userId: string, deviceIdentifier: string, name: string, type: number, sessionStamp?: string): Promise<void> {
     const now = new Date().toISOString();
+    const effectiveSessionStamp = String(sessionStamp || '').trim() || (await this.getDevice(userId, deviceIdentifier))?.sessionStamp || '';
     await this.db.prepare(
-      'INSERT INTO devices(user_id, device_identifier, name, type, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(user_id, device_identifier) DO UPDATE SET name=excluded.name, type=excluded.type, updated_at=excluded.updated_at'
+      'INSERT INTO devices(user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 0, NULL, ?, ?) ' +
+      'ON CONFLICT(user_id, device_identifier) DO UPDATE SET name=excluded.name, type=excluded.type, session_stamp=excluded.session_stamp, updated_at=excluded.updated_at'
     )
-      .bind(userId, deviceIdentifier, name, type, now, now)
+      .bind(userId, deviceIdentifier, name, type, effectiveSessionStamp, now, now)
       .run();
   }
 
@@ -973,7 +1015,7 @@ export class StorageService {
   async getDevicesByUserId(userId: string): Promise<Device[]> {
     const res = await this.db
       .prepare(
-        'SELECT user_id, device_identifier, name, type, created_at, updated_at ' +
+        'SELECT user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at ' +
         'FROM devices WHERE user_id = ? ORDER BY updated_at DESC'
       )
       .bind(userId)
@@ -983,9 +1025,30 @@ export class StorageService {
       deviceIdentifier: row.device_identifier,
       name: row.name,
       type: row.type,
+      sessionStamp: row.session_stamp || '',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  async getDevice(userId: string, deviceIdentifier: string): Promise<Device | null> {
+    const row = await this.db
+      .prepare(
+        'SELECT user_id, device_identifier, name, type, session_stamp, banned, banned_at, created_at, updated_at ' +
+        'FROM devices WHERE user_id = ? AND device_identifier = ? LIMIT 1'
+      )
+      .bind(userId, deviceIdentifier)
+      .first<any>();
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      deviceIdentifier: row.device_identifier,
+      name: row.name,
+      type: row.type,
+      sessionStamp: row.session_stamp || '',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   async deleteDevice(userId: string, deviceIdentifier: string): Promise<boolean> {
@@ -994,6 +1057,14 @@ export class StorageService {
       .bind(userId, deviceIdentifier)
       .run();
     return Number(result.meta.changes ?? 0) > 0;
+  }
+
+  async deleteDevicesByUserId(userId: string): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM devices WHERE user_id = ?')
+      .bind(userId)
+      .run();
+    return Number(result.meta.changes ?? 0);
   }
 
   async getTrustedDeviceTokenSummariesByUserId(userId: string): Promise<TrustedDeviceTokenSummary[]> {

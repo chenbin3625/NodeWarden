@@ -75,6 +75,7 @@ import {
   handleGetDevices,
   handleRevokeAllTrustedDevices,
   handleRevokeTrustedDevice,
+  handleDeleteAllDevices,
   handleDeleteDevice,
   handleUpdateDeviceToken
 } from './handlers/devices';
@@ -750,8 +751,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
 
     // Devices endpoint
-    if (path === '/api/devices' && method === 'GET') {
-      return handleGetDevices(request, env, userId);
+    if (path === '/api/devices') {
+      if (method === 'GET') return handleGetDevices(request, env, userId);
+      if (method === 'DELETE') return handleDeleteAllDevices(request, env, userId);
     }
 
     if (path === '/api/devices/authorized') {

@@ -9,6 +9,7 @@ interface SecurityDevicesPageProps {
   onRevokeTrust: (device: AuthorizedDevice) => void;
   onRemoveDevice: (device: AuthorizedDevice) => void;
   onRevokeAll: () => void;
+  onRemoveAll: () => void;
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -47,7 +48,7 @@ export default function SecurityDevicesPage(props: SecurityDevicesPageProps) {
           <div>
             <h3 style={{ margin: 0 }}>{t('txt_device_management')}</h3>
             <div className="muted-inline" style={{ marginTop: 4 }}>
-              {t('txt_manage_authorized_devices_and_30_day_totp_trusted_sessions')}
+              {t('txt_manage_device_sessions_and_30_day_totp_trusted_sessions')}
             </div>
           </div>
           <div className="actions">
@@ -58,6 +59,10 @@ export default function SecurityDevicesPage(props: SecurityDevicesPageProps) {
             <button type="button" className="btn btn-danger small" onClick={props.onRevokeAll}>
               <ShieldOff size={14} className="btn-icon" />
               {t('txt_revoke_all_trusted')}
+            </button>
+            <button type="button" className="btn btn-danger small" onClick={props.onRemoveAll}>
+              <Trash2 size={14} className="btn-icon" />
+              {t('txt_remove_all_devices')}
             </button>
           </div>
         </div>

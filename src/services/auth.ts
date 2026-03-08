@@ -61,22 +61,23 @@ export class AuthService {
   }
 
   // Generate access token
-  async generateAccessToken(user: User): Promise<string> {
+  async generateAccessToken(user: User, device?: { identifier: string; sessionStamp: string } | null): Promise<string> {
     return createJWT(
       {
         sub: user.id,
         email: user.email,
         name: user.name,
         sstamp: user.securityStamp,
+        ...(device?.identifier ? { did: device.identifier, dstamp: device.sessionStamp } : {}),
       },
       this.env.JWT_SECRET
     );
   }
 
   // Generate refresh token
-  async generateRefreshToken(userId: string): Promise<string> {
+  async generateRefreshToken(userId: string, device?: { identifier: string; sessionStamp: string } | null): Promise<string> {
     const token = createRefreshToken();
-    await this.storage.saveRefreshToken(token, userId);
+    await this.storage.saveRefreshToken(token, userId, undefined, device?.identifier ?? null, device?.sessionStamp ?? null);
     return token;
   }
 
@@ -100,22 +101,44 @@ export class AuthService {
       return null; // Token was issued before password change
     }
 
+    if (payload.did) {
+      const device = await this.storage.getDevice(user.id, payload.did);
+      if (!device) return null;
+      if (!payload.dstamp || payload.dstamp !== device.sessionStamp) return null;
+    }
+
     return payload;
   }
 
   // Refresh access token
-  async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; user: User } | null> {
-    const userId = await this.storage.getRefreshTokenUserId(refreshToken);
-    if (!userId) return null;
+  async refreshAccessToken(
+    refreshToken: string
+  ): Promise<{ accessToken: string; user: User; device: { identifier: string; sessionStamp: string } | null } | null> {
+    const record = await this.storage.getRefreshTokenRecord(refreshToken);
+    if (!record?.userId) return null;
 
-    const user = await this.storage.getUserById(userId);
+    const user = await this.storage.getUserById(record.userId);
     if (!user) return null;
     if (user.status !== 'active') {
       await this.storage.deleteRefreshToken(refreshToken);
       return null;
     }
 
-    const accessToken = await this.generateAccessToken(user);
-    return { accessToken, user };
+    let device: { identifier: string; sessionStamp: string } | null = null;
+    if (record.deviceIdentifier) {
+      const boundDevice = await this.storage.getDevice(user.id, record.deviceIdentifier);
+      if (!boundDevice) {
+        await this.storage.deleteRefreshToken(refreshToken);
+        return null;
+      }
+      if (!record.deviceSessionStamp || boundDevice.sessionStamp !== record.deviceSessionStamp) {
+        await this.storage.deleteRefreshToken(refreshToken);
+        return null;
+      }
+      device = { identifier: boundDevice.deviceIdentifier, sessionStamp: boundDevice.sessionStamp };
+    }
+
+    const accessToken = await this.generateAccessToken(user, device);
+    return { accessToken, user, device };
   }
 }

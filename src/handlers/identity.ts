@@ -8,6 +8,7 @@ import { isTotpEnabled, verifyTotpToken } from '../utils/totp';
 import { createRefreshToken } from '../utils/jwt';
 import { readAuthRequestDeviceInfo } from '../utils/device';
 import { createRecoveryCode, recoveryCodeEquals } from '../utils/recovery-code';
+import { generateUUID } from '../utils/uuid';
 import { issueSendAccessToken } from './sends';
 import {
   buildAccountKeys,
@@ -227,15 +228,25 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     }
 
     // Persist device only after successful password + (optional) 2FA verification.
-    if (deviceInfo.deviceIdentifier) {
-      await storage.upsertDevice(user.id, deviceInfo.deviceIdentifier, deviceInfo.deviceName, deviceInfo.deviceType);
+    const deviceSession =
+      deviceInfo.deviceIdentifier
+        ? { identifier: deviceInfo.deviceIdentifier, sessionStamp: generateUUID() }
+        : null;
+    if (deviceSession) {
+      await storage.upsertDevice(
+        user.id,
+        deviceSession.identifier,
+        deviceInfo.deviceName,
+        deviceInfo.deviceType,
+        deviceSession.sessionStamp
+      );
     }
 
     // Successful login - clear failed attempts
     await rateLimit.clearLoginAttempts(loginIdentifier);
 
-    const accessToken = await auth.generateAccessToken(user);
-    const refreshToken = await auth.generateRefreshToken(user.id);
+    const accessToken = await auth.generateAccessToken(user, deviceSession);
+    const refreshToken = await auth.generateRefreshToken(user.id, deviceSession);
 
     const response: TokenResponse = {
       access_token: accessToken,
@@ -346,8 +357,8 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
       Date.now() + LIMITS.auth.refreshTokenOverlapGraceMs
     );
 
-    const { accessToken, user } = result;
-    const newRefreshToken = await auth.generateRefreshToken(user.id);
+    const { accessToken, user, device } = result;
+    const newRefreshToken = await auth.generateRefreshToken(user.id, device);
 
     const response: TokenResponse = {
       access_token: accessToken,

@@ -2,6 +2,7 @@ import { Env } from '../types';
 import { StorageService } from '../services/storage';
 import { errorResponse, jsonResponse } from '../utils/response';
 import { readKnownDeviceProbe } from '../utils/device';
+import { generateUUID } from '../utils/uuid';
 
 // GET /api/devices/knowndevice
 // Compatible with Bitwarden/Vaultwarden behavior:
@@ -133,8 +134,27 @@ export async function handleDeleteDevice(
 
   const storage = new StorageService(env.DB);
   await storage.deleteTrustedTwoFactorTokensByDevice(userId, normalized);
+  await storage.deleteRefreshTokensByDevice(userId, normalized);
   const deleted = await storage.deleteDevice(userId, normalized);
   return jsonResponse({ success: deleted });
+}
+
+// DELETE /api/devices
+export async function handleDeleteAllDevices(request: Request, env: Env, userId: string): Promise<Response> {
+  void request;
+  const storage = new StorageService(env.DB);
+  const user = await storage.getUserById(userId);
+  if (!user) return errorResponse('User not found', 404);
+
+  const [removedTrusted, removedSessions, removedDevices] = await Promise.all([
+    storage.deleteTrustedTwoFactorTokensByUserId(userId),
+    storage.deleteRefreshTokensByUserId(userId),
+    storage.deleteDevicesByUserId(userId),
+  ]);
+  user.securityStamp = generateUUID();
+  user.updatedAt = new Date().toISOString();
+  await storage.saveUser(user);
+  return jsonResponse({ success: true, removedTrusted, removedSessions: removedSessions ?? 0, removedDevices });
 }
 
 // PUT /api/devices/identifier/{deviceIdentifier}/token
