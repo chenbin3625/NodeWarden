@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'preact/hooks';
 import { AlertTriangle, Copy, RefreshCw } from 'lucide-preact';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import StandalonePageFrame from '@/components/StandalonePageFrame';
 import { t } from '@/lib/i18n';
 
@@ -55,8 +56,10 @@ export default function JwtWarningPage(props: JwtWarningPageProps) {
                 type="button"
                 className="btn btn-secondary"
                 onClick={async () => {
-                  await navigator.clipboard.writeText(generatedSecret);
-                  setCopyHint(t('txt_copied'));
+                  await copyTextToClipboard(generatedSecret, {
+                    onSuccess: () => setCopyHint(t('txt_copied')),
+                    onError: () => setCopyHint(t('txt_copy_failed')),
+                  });
                   window.setTimeout(() => setCopyHint(''), 1500);
                 }}
               >

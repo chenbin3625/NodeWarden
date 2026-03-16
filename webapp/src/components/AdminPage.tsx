@@ -1,5 +1,6 @@
 import { useState } from 'preact/hooks';
 import { ChevronLeft, ChevronRight, Clipboard, Plus, RefreshCw, Trash2, UserCheck, UserX } from 'lucide-preact';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import type { AdminInvite, AdminUser } from '@/lib/types';
 import { t } from '@/lib/i18n';
 
@@ -134,7 +135,7 @@ export default function AdminPage(props: AdminPageProps) {
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => navigator.clipboard.writeText(invite.inviteLink || '')}
+                      onClick={() => void copyTextToClipboard(invite.inviteLink || '', { successMessage: t('txt_link_copied') })}
                     >
                       <Clipboard size={14} className="btn-icon" /> {t('txt_copy_link')}
                     </button>

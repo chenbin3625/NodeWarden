@@ -1,7 +1,7 @@
 import { argon2idAsync } from '@noble/hashes/argon2.js';
 import { strToU8, zipSync } from 'fflate';
 import { Uint8ArrayReader, Uint8ArrayWriter, ZipReader, ZipWriter, configure as configureZipJs } from '@zip.js/zip.js';
-import type { PreloginKdfConfig } from './api';
+import type { PreloginKdfConfig } from './api/auth';
 import { base64ToBytes, bytesToBase64, decryptBw, decryptStr, encryptBw, hkdfExpand, pbkdf2 } from './crypto';
 import type { Cipher, Folder } from './types';
 

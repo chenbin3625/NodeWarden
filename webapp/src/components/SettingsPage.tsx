@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { Clipboard, KeyRound, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-preact';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import qrcode from 'qrcode-generator';
 import type { Profile } from '@/lib/types';
 import { t } from '@/lib/i18n';
@@ -144,8 +145,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                       className="btn btn-secondary"
                       disabled={totpLocked}
                       onClick={() => {
-                        void navigator.clipboard.writeText(secret);
-                        props.onNotify?.('success', t('txt_secret_copied'));
+                        void copyTextToClipboard(secret, { successMessage: t('txt_secret_copied') });
                       }}
                     >
                       <Clipboard size={14} className="btn-icon" />
@@ -185,8 +185,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                 className="btn btn-secondary"
                 disabled={!recoveryCode}
                 onClick={() => {
-                  void navigator.clipboard.writeText(recoveryCode);
-                  props.onNotify?.('success', t('txt_recovery_code_copied'));
+                  void copyTextToClipboard(recoveryCode, { successMessage: t('txt_recovery_code_copied') });
                 }}
               >
                 <Clipboard size={14} className="btn-icon" />

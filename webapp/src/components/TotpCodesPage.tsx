@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Clipboard, Globe } from 'lucide-preact';
+import { copyTextToClipboard as copyTextWithFeedback } from '@/lib/clipboard';
 import { calcTotpNow } from '@/lib/crypto';
 import { t } from '@/lib/i18n';
 import type { Cipher } from '@/lib/types';
+import { websiteIconUrl } from '@/components/vault/vault-page-helpers';
 
 interface TotpCodesPageProps {
   ciphers: Cipher[];
@@ -13,6 +15,7 @@ interface TotpCodesPageProps {
 const TOTP_PERIOD_SECONDS = 30;
 const TOTP_RING_RADIUS = 14;
 const TOTP_RING_CIRCUMFERENCE = 2 * Math.PI * TOTP_RING_RADIUS;
+const failedIconHosts = new Set<string>();
 
 function formatTotp(code: string): string {
   if (!code || code.length < 6) return code;
@@ -41,20 +44,22 @@ function hostFromUri(uri: string): string {
 function TotpListIcon({ cipher }: { cipher: Cipher }) {
   const uri = firstCipherUri(cipher);
   const host = hostFromUri(uri);
-  const [errored, setErrored] = useState(false);
-
+  const [errored, setErrored] = useState(() => (host ? failedIconHosts.has(host) : false));
   if (host && !errored) {
     return (
       <img
         className="list-icon"
-        src={`/icons/${host}/icon.png?v=2`}
+        src={websiteIconUrl(host)}
         alt=""
         loading="lazy"
-        onError={() => setErrored(true)}
+        referrerPolicy="no-referrer"
+        onError={() => {
+          failedIconHosts.add(host);
+          setErrored(true);
+        }}
       />
     );
   }
-
   return (
     <span className="list-icon-fallback">
       <Globe size={18} />
@@ -68,9 +73,7 @@ export default function TotpCodesPage(props: TotpCodesPageProps) {
   const listRef = useRef<HTMLDivElement | null>(null);
 
   async function copyToClipboard(value: string): Promise<void> {
-    if (!value.trim()) return;
-    await navigator.clipboard.writeText(value);
-    props.onNotify('success', t('txt_code_copied'));
+    await copyTextWithFeedback(value, { successMessage: t('txt_code_copied') });
   }
 
   const totpItems = useMemo(

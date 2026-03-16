@@ -37,20 +37,29 @@ function twoFactorRequiredResponse(message: string = 'Two factor required.', inc
     : [String(TWO_FACTOR_PROVIDER_AUTHENTICATOR)];
   const providers2: Record<string, null> = {};
   for (const provider of providers) providers2[provider] = null;
+  const customResponse = {
+    TwoFactorProviders: providers,
+    TwoFactorProviders2: providers2,
+    SsoEmail2faSessionToken: null,
+    MasterPasswordPolicy: {
+      Object: 'masterPasswordPolicy',
+    },
+  };
 
   // Bitwarden clients rely on these fields to trigger the 2FA UI flow.
   return jsonResponse(
     {
       error: 'invalid_grant',
       error_description: message,
-      TwoFactorProviders: providers,
-      TwoFactorProviders2: providers2,
+      Error: 'invalid_grant',
+      ErrorDescription: message,
+      ErrorMessage: message,
+      TwoFactorProviders: customResponse.TwoFactorProviders,
+      TwoFactorProviders2: customResponse.TwoFactorProviders2,
       // Required by current Android parser (nullable value is acceptable).
-      SsoEmail2faSessionToken: null,
-      // Keep payload shape close to upstream implementations.
-      MasterPasswordPolicy: {
-        Object: 'masterPasswordPolicy',
-      },
+      SsoEmail2faSessionToken: customResponse.SsoEmail2faSessionToken,
+      MasterPasswordPolicy: customResponse.MasterPasswordPolicy,
+      CustomResponse: customResponse,
       ErrorModel: {
         Message: message,
         Object: 'error',

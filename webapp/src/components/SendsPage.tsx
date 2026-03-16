@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { CheckCheck, ChevronLeft, Copy, Eye, EyeOff, File, FileText, LayoutGrid, Pencil, Plus, RefreshCw, Save, Send as SendIcon, Trash2, X } from 'lucide-preact';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import type { Send, SendDraft } from '@/lib/types';
 import { t } from '@/lib/i18n';
 
@@ -211,8 +212,7 @@ export default function SendsPage(props: SendsPageProps) {
 
   function copyAccessUrl(send: Send): void {
     const url = send.shareUrl || `${window.location.origin}/#/send/${send.accessId}`;
-    void navigator.clipboard.writeText(url);
-    props.onNotify('success', t('txt_link_copied'));
+    void copyTextToClipboard(url, { successMessage: t('txt_link_copied') });
   }
 
   return (

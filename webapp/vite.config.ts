@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(rootDir, 'src'),
+      '@shared': path.resolve(rootDir, '../shared'),
     },
   },
   build: {
@@ -20,16 +21,55 @@ export default defineConfig({
     target: 'esnext',
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['preact', 'preact/hooks', 'preact/jsx-runtime'],
-          query: ['@tanstack/react-query'],
-          icons: ['lucide-preact'],
+        manualChunks(id) {
+          if (id.includes('/node_modules/')) {
+            return 'vendor';
+          }
+
+          const normalized = id.replace(/\\/g, '/');
+
+          if (
+            normalized.includes('/src/components/AuthViews.tsx') ||
+            normalized.includes('/src/components/PublicSendPage.tsx') ||
+            normalized.includes('/src/components/RecoverTwoFactorPage.tsx') ||
+            normalized.includes('/src/components/JwtWarningPage.tsx') ||
+            normalized.includes('/src/lib/app-auth.ts')
+          ) {
+            return 'auth-suite';
+          }
+
+          if (
+            normalized.includes('/src/components/ImportPage.tsx') ||
+            normalized.includes('/src/lib/import-') ||
+            normalized.includes('/src/lib/export-formats.ts') ||
+            normalized.includes('/src/components/VaultPage.tsx') ||
+            normalized.includes('/src/components/SendsPage.tsx') ||
+            normalized.includes('/src/components/TotpCodesPage.tsx') ||
+            normalized.includes('/src/components/vault/')
+          ) {
+            return 'workspace-suite';
+          }
+
+          if (
+            normalized.includes('/src/components/BackupCenterPage.tsx') ||
+            normalized.includes('/src/components/backup-center/') ||
+            normalized.includes('/src/components/SettingsPage.tsx') ||
+            normalized.includes('/src/components/SecurityDevicesPage.tsx') ||
+            normalized.includes('/src/components/AdminPage.tsx')
+          ) {
+            return 'management-suite';
+          }
+
+          return undefined;
         },
       },
     },
   },
   server: {
     port: 5173,
+    fs: {
+      allow: [path.resolve(rootDir, '..')],
+    },
     proxy: {
       '/api': 'http://127.0.0.1:8787',
       '/identity': 'http://127.0.0.1:8787',

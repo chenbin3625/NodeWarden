@@ -4,23 +4,22 @@ import { strFromU8, unzipSync } from 'fflate';
 import { BlobReader, Uint8ArrayWriter, ZipReader, configure as configureZipJs } from '@zip.js/zip.js';
 import { Download, FileUp } from 'lucide-preact';
 import ConfirmDialog from '@/components/ConfirmDialog';
-import type { CiphersImportPayload } from '@/lib/api';
+import type { CiphersImportPayload } from '@/lib/api/vault';
 import {
   type EncryptedJsonMode,
   EXPORT_FORMATS,
-  type ExportDownloadPayload,
   type ExportFormatId,
   type ExportRequest,
 } from '@/lib/export-formats';
 import {
-  getFileAcceptBySource,
-  IMPORT_SOURCES,
-  type BitwardenJsonInput,
-  type ImportSourceId,
-  normalizeBitwardenEncryptedAccountImport,
-  normalizeBitwardenImport,
   parseImportPayloadBySource,
 } from '@/lib/import-formats';
+import { getFileAcceptBySource, IMPORT_SOURCES, type ImportSourceId } from '@/lib/import-format-sources';
+import {
+  type BitwardenJsonInput,
+  normalizeBitwardenEncryptedAccountImport,
+  normalizeBitwardenImport,
+} from '@/lib/import-formats-bitwarden';
 import { base64ToBytes, decryptStr, hkdfExpand, pbkdf2 } from '@/lib/crypto';
 import { t } from '@/lib/i18n';
 import type { Folder } from '@/lib/types';
@@ -48,7 +47,7 @@ interface ImportPageProps {
   accountKeys?: { encB64: string; macB64: string } | null;
   onNotify: (type: 'success' | 'error', text: string) => void;
   folders: Folder[];
-  onExport: (request: ExportRequest) => Promise<ExportDownloadPayload>;
+  onExport: (request: ExportRequest) => Promise<void>;
 }
 
 export interface ImportResultSummary {
@@ -539,23 +538,13 @@ export default function ImportPage({ onImport, onImportEncryptedRaw, accountKeys
 
     setIsExporting(true);
     try {
-      const payload = await onExport({
+      await onExport({
         format: exportFormat,
         encryptedJsonMode: exportNeedsMode ? encryptedJsonMode : undefined,
         filePassword,
         zipPassword: exportIsZip ? zipPass : '',
         masterPassword,
       });
-      const blobBytes = Uint8Array.from(payload.bytes);
-      const blob = new Blob([blobBytes], { type: payload.mimeType });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = payload.fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
       onNotify('success', t('txt_export_completed'));
     } catch (error) {
       const message = error instanceof Error ? error.message : t('txt_export_failed');

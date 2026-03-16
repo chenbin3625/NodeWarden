@@ -8,7 +8,8 @@
     "jsxImportSource": "preact",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@shared/*": ["../shared/*"]
     },
     "strict": true,
     "noEmit": true,
@@ -18,5 +19,5 @@
     "resolveJsonModule": true,
     "types": ["vite/client"]
   },
-  "include": ["src/**/*", "vite.config.ts"]
+  "include": ["src/**/*", "../shared/**/*", "vite.config.ts"]
 }
