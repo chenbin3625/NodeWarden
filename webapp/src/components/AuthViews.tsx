@@ -19,6 +19,7 @@ interface RegisterValues {
 interface AuthViewsProps {
   mode: 'login' | 'register' | 'locked';
   pendingAction: 'login' | 'register' | 'unlock' | null;
+  unlockReady: boolean;
   loginValues: LoginValues;
   registerValues: RegisterValues;
   unlockPassword: string;
@@ -86,7 +87,7 @@ export default function AuthViews(props: AuthViewsProps) {
               autoComplete="current-password"
               onInput={props.onChangeUnlock}
             />
-            <button type="submit" className="btn btn-primary full" disabled={unlockBusy}>
+            <button type="submit" className="btn btn-primary full" disabled={unlockBusy || !props.unlockReady}>
               <Unlock size={16} className="btn-icon" />
               {unlockBusy ? t('txt_unlocking') : t('txt_unlock')}
             </button>

@@ -428,7 +428,7 @@ export async function buildBitwardenCsvString(args: BuildPlainJsonArgs): Promise
       ? (login.uris as Array<Record<string, unknown>>)
           .map((uri) => normalizeString(uri.uri) || '')
           .filter((uri) => !!uri)
-          .join(',')
+          .join('\n')
       : '';
 
     rows.push([

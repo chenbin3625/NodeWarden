@@ -19,6 +19,36 @@ export function normalizeUri(raw: string): string | null {
   return s.slice(0, 1000);
 }
 
+export function parseSerializedUris(raw: string): string[] {
+  const source = txt(raw);
+  if (!source) return [];
+
+  const newlineParts = source
+    .split(/\r?\n/)
+    .map((part) => txt(part))
+    .filter(Boolean);
+
+  const parts =
+    newlineParts.length > 1
+      ? newlineParts
+      : source.includes(',')
+        ? source
+            .split(/,(?=\s*(?:[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9.-]+\.[a-z]{2,}(?:[/:?#]|$)))/i)
+            .map((part) => txt(part))
+            .filter(Boolean)
+        : [source];
+
+  const seen = new Set<string>();
+  const uris: string[] = [];
+  for (const part of parts) {
+    const normalized = normalizeUri(part);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    uris.push(normalized);
+  }
+  return uris;
+}
+
 export function nameFromUrl(raw: string): string | null {
   const uri = normalizeUri(raw);
   if (!uri) return null;

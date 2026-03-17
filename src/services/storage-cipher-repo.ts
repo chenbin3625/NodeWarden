@@ -4,15 +4,57 @@ type SafeBind = (stmt: D1PreparedStatement, ...values: any[]) => D1PreparedState
 type SqlChunkSize = (fixedBindCount: number) => number;
 type UpdateRevisionDate = (userId: string) => Promise<string>;
 
-export async function getCipher(db: D1Database, id: string): Promise<Cipher | null> {
-  const row = await db.prepare('SELECT data FROM ciphers WHERE id = ?').bind(id).first<{ data: string }>();
+interface CipherRow {
+  id: string;
+  user_id: string;
+  type: number | null;
+  folder_id: string | null;
+  name: string | null;
+  notes: string | null;
+  favorite: number | null;
+  data: string;
+  reprompt: number | null;
+  key: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+function parseCipherRow(row: CipherRow | null | undefined): Cipher | null {
   if (!row?.data) return null;
   try {
-    return JSON.parse(row.data) as Cipher;
+    const parsed = JSON.parse(row.data) as Cipher;
+    return {
+      ...parsed,
+      id: row.id,
+      userId: row.user_id,
+      type: Number(row.type) || Number(parsed.type) || 1,
+      folderId: row.folder_id ?? parsed.folderId ?? null,
+      name: row.name ?? parsed.name ?? null,
+      notes: row.notes ?? parsed.notes ?? null,
+      favorite: row.favorite != null ? !!row.favorite : !!parsed.favorite,
+      reprompt: row.reprompt ?? parsed.reprompt ?? 0,
+      key: row.key ?? parsed.key ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      deletedAt: row.deleted_at ?? null,
+    };
   } catch {
-    console.error('Corrupted cipher data, id:', id);
+    console.error('Corrupted cipher data, id:', row.id);
     return null;
   }
+}
+
+function selectCipherColumns(): string {
+  return 'id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, deleted_at';
+}
+
+export async function getCipher(db: D1Database, id: string): Promise<Cipher | null> {
+  const row = await db
+    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE id = ?`)
+    .bind(id)
+    .first<CipherRow>();
+  return parseCipherRow(row);
 }
 
 export async function saveCipher(db: D1Database, safeBind: SafeBind, cipher: Cipher): Promise<void> {
@@ -129,13 +171,13 @@ export async function bulkDeleteCiphers(
 }
 
 export async function getAllCiphers(db: D1Database, userId: string): Promise<Cipher[]> {
-  const res = await db.prepare('SELECT data FROM ciphers WHERE user_id = ? ORDER BY updated_at DESC').bind(userId).all<{ data: string }>();
-  return (res.results || []).flatMap((r) => {
-    try {
-      return [JSON.parse(r.data) as Cipher];
-    } catch {
-      return [];
-    }
+  const res = await db
+    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE user_id = ? ORDER BY updated_at DESC`)
+    .bind(userId)
+    .all<CipherRow>();
+  return (res.results || []).flatMap((row) => {
+    const cipher = parseCipherRow(row);
+    return cipher ? [cipher] : [];
   });
 }
 
@@ -149,20 +191,17 @@ export async function getCiphersPage(
   const whereDeleted = includeDeleted ? '' : 'AND deleted_at IS NULL';
   const res = await db
     .prepare(
-      `SELECT data FROM ciphers
+      `SELECT ${selectCipherColumns()} FROM ciphers
        WHERE user_id = ?
        ${whereDeleted}
        ORDER BY updated_at DESC
        LIMIT ? OFFSET ?`
     )
     .bind(userId, limit, offset)
-    .all<{ data: string }>();
-  return (res.results || []).flatMap((r) => {
-    try {
-      return [JSON.parse(r.data) as Cipher];
-    } catch {
-      return [];
-    }
+    .all<CipherRow>();
+  return (res.results || []).flatMap((row) => {
+    const cipher = parseCipherRow(row);
+    return cipher ? [cipher] : [];
   });
 }
 
@@ -181,15 +220,12 @@ export async function getCiphersByIds(
   for (let i = 0; i < uniqueIds.length; i += chunkSize) {
     const chunk = uniqueIds.slice(i, i + chunkSize);
     const placeholders = chunk.map(() => '?').join(',');
-    const stmt = db.prepare(`SELECT data FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
-    const res = await stmt.bind(userId, ...chunk).all<{ data: string }>();
+    const stmt = db.prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
+    const res = await stmt.bind(userId, ...chunk).all<CipherRow>();
     out.push(
-      ...(res.results || []).flatMap((r) => {
-        try {
-          return [JSON.parse(r.data) as Cipher];
-        } catch {
-          return [];
-        }
+      ...(res.results || []).flatMap((row) => {
+        const cipher = parseCipherRow(row);
+        return cipher ? [cipher] : [];
       })
     );
   }

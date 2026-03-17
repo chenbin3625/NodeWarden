@@ -1,9 +1,7 @@
 import {
   createAuthedFetch,
-  deriveLoginHash,
+  deriveLoginHashLocally,
   getProfile,
-  getSetupStatus,
-  getWebConfig,
   loadSession,
   loginWithPassword,
   refreshAccessToken,
@@ -11,7 +9,8 @@ import {
   registerAccount,
   unlockVaultKey,
 } from '@/lib/api/auth';
-import type { AppPhase, Profile, SessionState } from '@/lib/types';
+import { readInviteCodeFromUrl } from '@/lib/app-support';
+import type { AppPhase, Profile, SessionState, TokenSuccess, WebBootstrapResponse } from '@/lib/types';
 
 export interface PendingTotp {
   email: string;
@@ -22,7 +21,6 @@ export interface PendingTotp {
 export type JwtUnsafeReason = 'missing' | 'default' | 'too_short';
 
 export interface BootstrapAppResult {
-  setupRegistered: boolean;
   defaultKdfIterations: number;
   jwtWarning: { reason: JwtUnsafeReason; minLength: number } | null;
   session: SessionState | null;
@@ -30,9 +28,17 @@ export interface BootstrapAppResult {
   phase: AppPhase;
 }
 
+export interface InitialAppBootstrapState {
+  defaultKdfIterations: number;
+  jwtWarning: { reason: JwtUnsafeReason; minLength: number } | null;
+  session: SessionState | null;
+  phase: AppPhase;
+}
+
 export interface CompletedLogin {
   session: SessionState;
   profile: Profile;
+  profilePromise: Promise<Profile>;
 }
 
 export type PasswordLoginResult =
@@ -80,35 +86,92 @@ async function maybeRefreshSession(session: SessionState): Promise<SessionState 
   };
 }
 
-export async function bootstrapAppSession(): Promise<BootstrapAppResult> {
-  const [setup, config] = await Promise.all([getSetupStatus(), getWebConfig()]);
-  const setupRegistered = setup.registered;
-  const defaultKdfIterations = Number(config.defaultKdfIterations || 600000);
-  const jwtUnsafeReason = config.jwtUnsafeReason || null;
+function readWindowBootstrap(): WebBootstrapResponse {
+  if (typeof window === 'undefined') return {};
+  const raw = (window as Window & { __NW_BOOT__?: WebBootstrapResponse }).__NW_BOOT__;
+  return raw && typeof raw === 'object' ? raw : {};
+}
 
-  if (jwtUnsafeReason) {
-    return {
-      setupRegistered,
-      defaultKdfIterations,
-      jwtWarning: {
+interface AccessTokenClaims {
+  sub?: string;
+  email?: string;
+  name?: string | null;
+  premium?: boolean;
+}
+
+function decodeAccessTokenClaims(accessToken: string): AccessTokenClaims {
+  try {
+    const parts = accessToken.split('.');
+    if (parts.length < 2) return {};
+    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = payload.padEnd(Math.ceil(payload.length / 4) * 4, '=');
+    return (JSON.parse(atob(padded)) as AccessTokenClaims) || {};
+  } catch {
+    return {};
+  }
+}
+
+function buildTransientProfile(token: TokenSuccess, email: string): Profile {
+  const claims = decodeAccessTokenClaims(token.access_token);
+  const normalizedEmail = String(claims.email || email || '').trim().toLowerCase();
+  const accountKeys = token.accountKeys ?? token.AccountKeys ?? null;
+  return {
+    id: String(claims.sub || ''),
+    email: normalizedEmail,
+    name: String(claims.name || normalizedEmail || ''),
+    key: String(token.Key || ''),
+    privateKey: token.PrivateKey ?? null,
+    role: 'user',
+    premium: !!claims.premium,
+    accountKeys,
+    object: 'profile',
+  };
+}
+
+export function readInitialAppBootstrapState(): InitialAppBootstrapState {
+  const boot = readWindowBootstrap();
+  const defaultKdfIterations = Number(boot.defaultKdfIterations || 600000);
+  const jwtUnsafeReason = boot.jwtUnsafeReason || null;
+  const jwtWarning = jwtUnsafeReason
+    ? {
         reason: jwtUnsafeReason,
-        minLength: Number(config.jwtSecretMinLength || 32),
-      },
+        minLength: Number(boot.jwtSecretMinLength || 32),
+      }
+    : null;
+  const session = loadSession();
+  const hasInviteCode = !!readInviteCodeFromUrl();
+
+  return {
+    defaultKdfIterations,
+    jwtWarning,
+    session,
+    phase: jwtWarning ? 'login' : session ? 'locked' : hasInviteCode ? 'register' : 'login',
+  };
+}
+
+export async function bootstrapAppSession(): Promise<BootstrapAppResult> {
+  const initial = readInitialAppBootstrapState();
+  const defaultKdfIterations = initial.defaultKdfIterations;
+  const jwtWarning = initial.jwtWarning;
+
+  if (jwtWarning) {
+    return {
+      defaultKdfIterations,
+      jwtWarning,
       session: null,
       profile: null,
       phase: 'login',
     };
   }
 
-  const loaded = loadSession();
+  const loaded = initial.session;
   if (!loaded) {
     return {
-      setupRegistered,
       defaultKdfIterations,
       jwtWarning: null,
       session: null,
       profile: null,
-      phase: setupRegistered ? 'login' : 'register',
+      phase: initial.phase,
     };
   }
 
@@ -124,7 +187,6 @@ export async function bootstrapAppSession(): Promise<BootstrapAppResult> {
       )
     );
     return {
-      setupRegistered,
       defaultKdfIterations,
       jwtWarning: null,
       session,
@@ -133,32 +195,39 @@ export async function bootstrapAppSession(): Promise<BootstrapAppResult> {
     };
   } catch {
     return {
-      setupRegistered,
       defaultKdfIterations,
       jwtWarning: null,
       session: null,
       profile: null,
-      phase: setupRegistered ? 'login' : 'register',
+      phase: initial.phase === 'register' ? 'register' : 'login',
     };
   }
 }
 
 export async function completeLogin(
-  tokenAccess: string,
-  tokenRefresh: string,
+  token: TokenSuccess,
   email: string,
   masterKey: Uint8Array
 ): Promise<CompletedLogin> {
-  const baseSession: SessionState = { accessToken: tokenAccess, refreshToken: tokenRefresh, email };
+  const normalizedEmail = email.trim().toLowerCase();
+  const baseSession: SessionState = {
+    accessToken: token.access_token,
+    refreshToken: token.refresh_token,
+    email: normalizedEmail,
+  };
   const tempFetch = createAuthedFetch(
     () => baseSession,
     () => {}
   );
-  const profile = await getProfile(tempFetch);
+  const profile = buildTransientProfile(token, normalizedEmail);
+  if (!profile.key) {
+    throw new Error('Missing profile key');
+  }
   const keys = await unlockVaultKey(profile.key, masterKey);
   return {
     session: { ...baseSession, ...keys },
     profile,
+    profilePromise: getProfile(tempFetch),
   };
 }
 
@@ -168,13 +237,13 @@ export async function performPasswordLogin(
   fallbackIterations: number
 ): Promise<PasswordLoginResult> {
   const normalizedEmail = email.trim().toLowerCase();
-  const derived = await deriveLoginHash(normalizedEmail, password, fallbackIterations);
+  const derived = await deriveLoginHashLocally(normalizedEmail, password, fallbackIterations);
   const token = await loginWithPassword(normalizedEmail, derived.hash, { useRememberToken: true });
 
   if ('access_token' in token && token.access_token) {
     return {
       kind: 'success',
-      login: await completeLogin(token.access_token, token.refresh_token, normalizedEmail, derived.masterKey),
+      login: await completeLogin(token, normalizedEmail, derived.masterKey),
     };
   }
 
@@ -206,7 +275,7 @@ export async function performTotpLogin(
     rememberDevice,
   });
   if ('access_token' in token && token.access_token) {
-    return completeLogin(token.access_token, token.refresh_token, pendingTotp.email, pendingTotp.masterKey);
+    return completeLogin(token, pendingTotp.email, pendingTotp.masterKey);
   }
   const tokenError = token as { error_description?: string; error?: string };
   throw new Error(tokenError.error_description || tokenError.error || 'TOTP verify failed');
@@ -219,13 +288,13 @@ export async function performRecoverTwoFactorLogin(
   fallbackIterations: number
 ): Promise<RecoverTwoFactorResult> {
   const normalizedEmail = email.trim().toLowerCase();
-  const derived = await deriveLoginHash(normalizedEmail, password, fallbackIterations);
+  const derived = await deriveLoginHashLocally(normalizedEmail, password, fallbackIterations);
   const recovered = await recoverTwoFactor(normalizedEmail, derived.hash, recoveryCode.trim());
   const token = await loginWithPassword(normalizedEmail, derived.hash, { useRememberToken: false });
 
   if ('access_token' in token && token.access_token) {
     return {
-      login: await completeLogin(token.access_token, token.refresh_token, normalizedEmail, derived.masterKey),
+      login: await completeLogin(token, normalizedEmail, derived.masterKey),
       newRecoveryCode: recovered.newRecoveryCode || null,
     };
   }
@@ -258,7 +327,7 @@ export async function performUnlock(
   password: string,
   fallbackIterations: number
 ): Promise<SessionState> {
-  const derived = await deriveLoginHash(profile.email || session.email, password, fallbackIterations);
+  const derived = await deriveLoginHashLocally(profile.email || session.email, password, fallbackIterations);
   const keys = await unlockVaultKey(profile.key, derived.masterKey);
   const refreshedSession = await maybeRefreshSession(session);
   if (!refreshedSession) {

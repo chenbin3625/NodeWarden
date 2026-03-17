@@ -7,7 +7,6 @@ import {
   handleAccessSendFileV2,
   handleDownloadSendFile,
 } from './handlers/sends';
-import { handleSetupStatus } from './handlers/setup';
 import { handleKnownDevice } from './handlers/devices';
 import { handleToken, handlePrelogin, handleRevocation } from './handlers/identity';
 import {
@@ -23,6 +22,13 @@ import { jsonResponse } from './utils/response';
 import type { Env } from './types';
 
 type PublicRateLimiter = (category?: string, maxRequests?: number) => Promise<Response | null>;
+type JwtUnsafeReason = 'missing' | 'default' | 'too_short' | null;
+
+export interface WebBootstrapResponse {
+  defaultKdfIterations: number;
+  jwtUnsafeReason: JwtUnsafeReason;
+  jwtSecretMinLength: number;
+}
 
 function isSameOriginWriteRequest(request: Request): boolean {
   const targetOrigin = new URL(request.url).origin;
@@ -87,6 +93,7 @@ async function handleWebsiteIcon(host: string): Promise<Response> {
   const upstream = `https://favicon.im/${encodeURIComponent(normalizedHost)}`;
   try {
     const resp = await fetch(upstream, {
+      headers: { 'User-Agent': 'NodeWarden/1.0' },
       redirect: 'follow',
       cf: {
         cacheEverything: true,
@@ -110,7 +117,7 @@ async function handleWebsiteIcon(host: string): Promise<Response> {
   }
 }
 
-export function buildWebConfigResponse(env: Env, origin: string) {
+export function buildWebBootstrapResponse(env: Env): WebBootstrapResponse {
   const secret = (env.JWT_SECRET || '').trim();
   const jwtUnsafeReason =
     !secret
@@ -125,9 +132,6 @@ export function buildWebConfigResponse(env: Env, origin: string) {
     defaultKdfIterations: LIMITS.auth.defaultKdfIterations,
     jwtUnsafeReason,
     jwtSecretMinLength: LIMITS.auth.jwtSecretMinLength,
-    _icon_service_url: buildIconServiceTemplate(origin),
-    _icon_service_csp: buildIconServiceCsp(origin),
-    iconServiceUrl: buildIconServiceTemplate(origin),
   };
 }
 
@@ -138,18 +142,6 @@ export async function handlePublicRoute(
   method: string,
   enforcePublicRateLimit: PublicRateLimiter
 ): Promise<Response | null> {
-  if (path === '/setup/status' && method === 'GET') {
-    const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
-    if (blocked) return blocked;
-    return handleSetupStatus(request, env);
-  }
-
-  if (path === '/api/web/config' && method === 'GET') {
-    const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
-    if (blocked) return blocked;
-    return jsonResponse(buildWebConfigResponse(env, new URL(request.url).origin));
-  }
-
   if (path === '/.well-known/appspecific/com.chrome.devtools.json' && method === 'GET') {
     return new Response('{}', {
       status: 200,
@@ -158,10 +150,6 @@ export async function handlePublicRoute(
         'Cache-Control': 'no-store',
       },
     });
-  }
-
-  if ((path === '/favicon.ico' || path === '/favicon.svg') && method === 'GET') {
-    return handleNwFavicon();
   }
 
   const iconMatch = path.match(/^\/icons\/([^/]+)\/icon\.png$/i);

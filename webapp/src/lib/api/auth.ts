@@ -4,10 +4,8 @@ import type { AuthorizedDevice } from '../types';
 import type {
   Profile,
   SessionState,
-  SetupStatusResponse,
   TokenError,
   TokenSuccess,
-  WebConfigResponse,
 } from '../types';
 import { parseJson, type AuthedFetch, type SessionSetter } from './shared';
 
@@ -93,17 +91,6 @@ export function saveSession(session: SessionState | null): void {
   localStorage.setItem(SESSION_KEY, JSON.stringify(persisted));
 }
 
-export async function getSetupStatus(): Promise<SetupStatusResponse> {
-  const resp = await fetch('/setup/status');
-  const body = await parseJson<SetupStatusResponse>(resp);
-  return { registered: !!body?.registered };
-}
-
-export async function getWebConfig(): Promise<WebConfigResponse> {
-  const resp = await fetch('/api/web/config');
-  return (await parseJson<WebConfigResponse>(resp)) || {};
-}
-
 export function getCurrentDeviceIdentifier(): string {
   return (localStorage.getItem(DEVICE_IDENTIFIER_KEY) || '').trim();
 }
@@ -118,6 +105,18 @@ export async function deriveLoginHash(email: string, password: string, fallbackI
   const data = (await parseJson<{ kdfIterations?: number }>(pre)) || {};
   const iterations = Number(data.kdfIterations || fallbackIterations);
   const masterKey = await pbkdf2(password, email.toLowerCase(), iterations, 32);
+  const hash = await pbkdf2(masterKey, password, 1, 32);
+  return { hash: bytesToBase64(hash), masterKey, kdfIterations: iterations };
+}
+
+export async function deriveLoginHashLocally(
+  email: string,
+  password: string,
+  fallbackIterations: number
+): Promise<PreloginResult> {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const iterations = Number(fallbackIterations || 600000);
+  const masterKey = await pbkdf2(password, normalizedEmail, iterations, 32);
   const hash = await pbkdf2(masterKey, password, 1, 32);
   return { hash: bytesToBase64(hash), masterKey, kdfIterations: iterations };
 }

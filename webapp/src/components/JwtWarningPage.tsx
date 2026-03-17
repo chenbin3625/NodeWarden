@@ -9,6 +9,9 @@ interface JwtWarningPageProps {
   minLength: number;
 }
 
+const CLOUDFLARE_SETTINGS_URL =
+  'https://dash.cloudflare.com/?to=/:account/workers/services/view/nodewarden/production/settings';
+
 export default function JwtWarningPage(props: JwtWarningPageProps) {
   const [seed, setSeed] = useState(0);
   const [copyHint, setCopyHint] = useState('');
@@ -25,7 +28,8 @@ export default function JwtWarningPage(props: JwtWarningPageProps) {
   const isMissing = props.reason === 'missing';
   const fixTitle = isMissing ? t('txt_jwt_how_to_fix_add') : t('txt_jwt_how_to_fix_replace');
   const fixStep1 = isMissing ? t('txt_jwt_add_step_1') : t('txt_jwt_replace_step_1', { min: props.minLength });
-  const fixStep2 = isMissing ? t('txt_jwt_add_step_2') : t('txt_jwt_replace_step_2');
+  const fixStep2Prefix = isMissing ? t('txt_jwt_add_step_2_prefix') : t('txt_jwt_replace_step_2_prefix');
+  const fixStep2Suffix = isMissing ? t('txt_jwt_add_step_2_suffix') : t('txt_jwt_replace_step_2_suffix');
   const fixStep3 = isMissing ? t('txt_jwt_add_step_3') : t('txt_jwt_replace_step_3');
 
   return (
@@ -37,10 +41,38 @@ export default function JwtWarningPage(props: JwtWarningPageProps) {
         </div>
 
         <div className="jwt-warning-box">
+          <div className="jwt-warning-label">{t('txt_jwt_what_is')}</div>
+          <p className="jwt-warning-copy">{t('txt_jwt_what_is_body')}</p>
+
           <div className="jwt-warning-label">{fixTitle}</div>
           <ol className="jwt-warning-list">
             <li>{fixStep1}</li>
-            <li>{fixStep2}</li>
+            <li>
+              {fixStep2Prefix}
+              <a
+                href={CLOUDFLARE_SETTINGS_URL}
+                className="jwt-inline-link"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t('txt_settings')}
+              </a>
+              {fixStep2Suffix}
+              <div className="jwt-secret-fields">
+                <div className="jwt-secret-row">
+                  <span>{t('txt_jwt_secret_type_label')}</span>
+                  <strong>{t('txt_jwt_secret_type_value')}</strong>
+                </div>
+                <div className="jwt-secret-row">
+                  <span>{t('txt_jwt_secret_name_label')}</span>
+                  <strong>JWT_SECRET</strong>
+                </div>
+                <div className="jwt-secret-row">
+                  <span>{t('txt_jwt_secret_value_label')}</span>
+                  <strong>{t('txt_jwt_secret_value_requirement', { min: props.minLength })}</strong>
+                </div>
+              </div>
+            </li>
             <li>{fixStep3}</li>
           </ol>
 

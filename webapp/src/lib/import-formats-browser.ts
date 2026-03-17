@@ -1,5 +1,5 @@
 import type { CiphersImportPayload } from '@/lib/api/vault';
-import { addFolder, cardBrand, makeLoginCipher, nameFromUrl, normalizeUri, parseCsv, txt, val } from '@/lib/import-format-shared';
+import { addFolder, cardBrand, makeLoginCipher, nameFromUrl, normalizeUri, parseCsv, parseSerializedUris, txt, val } from '@/lib/import-format-shared';
 
 export function parseChromeCsv(textRaw: string): CiphersImportPayload {
   const rows = parseCsv(textRaw);
@@ -92,8 +92,8 @@ export function parseBitwardenCsv(textRaw: string): CiphersImportPayload {
     login.username = val(row.login_username);
     login.password = val(row.login_password);
     login.totp = val(row.login_totp);
-    const uri = normalizeUri(row.login_uri || '');
-    login.uris = uri ? [{ uri, match: null }] : null;
+    const uris = parseSerializedUris(row.login_uri || '');
+    login.uris = uris.length ? uris.map((uri) => ({ uri, match: null })) : null;
     const idx = result.ciphers.push(cipher) - 1;
     addFolder(result, row.folder, idx);
   }
