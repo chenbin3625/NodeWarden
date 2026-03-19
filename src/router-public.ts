@@ -11,6 +11,7 @@ import { handleKnownDevice } from './handlers/devices';
 import { handleToken, handlePrelogin, handleRevocation } from './handlers/identity';
 import {
   handleRegister,
+  handleGetPasswordHint,
   handleRecoverTwoFactor,
 } from './handlers/accounts';
 import { handlePublicDownloadAttachment } from './handlers/attachments';
@@ -92,28 +93,48 @@ async function handleWebsiteIcon(host: string): Promise<Response> {
   const normalizedHost = normalizeIconHost(host);
   if (!normalizedHost) return handleNwFavicon();
 
-  const upstream = `https://favicon.im/${encodeURIComponent(normalizedHost)}`;
+  const encodedHost = encodeURIComponent(normalizedHost);
+  const requestHeaders = { 'User-Agent': 'NodeWarden/1.0' };
+  const upstreamSources: Array<{ url: string; headers?: HeadersInit }> = [
+    {
+      url: `https://icons.bitwarden.net/${encodedHost}/icon.png`,
+      headers: requestHeaders,
+    },
+    {
+      url: `https://favicon.im/${encodedHost}`,
+      headers: requestHeaders,
+    },
+    {
+      url: `https://icons.duckduckgo.com/ip3/${encodedHost}.ico`,
+      headers: requestHeaders,
+    },
+  ];
+
   try {
-    const resp = await fetch(upstream, {
-      headers: { 'User-Agent': 'NodeWarden/1.0' },
-      redirect: 'follow',
-      cf: {
-        cacheEverything: true,
-        cacheTtl: LIMITS.cache.iconTtlSeconds,
-      },
-    } as RequestInit & { cf: { cacheEverything: boolean; cacheTtl: number } });
+    for (const source of upstreamSources) {
+      const resp = await fetch(source.url, {
+        headers: source.headers,
+        redirect: 'follow',
+        cf: {
+          cacheEverything: true,
+          cacheTtl: LIMITS.cache.iconTtlSeconds,
+        },
+      } as RequestInit & { cf: { cacheEverything: boolean; cacheTtl: number } });
 
-    if (!resp.ok) return handleNwFavicon();
-    const contentType = String(resp.headers.get('Content-Type') || '').toLowerCase();
-    if (!contentType.startsWith('image/')) return handleNwFavicon();
+      if (!resp.ok) continue;
+      const contentType = String(resp.headers.get('Content-Type') || '').toLowerCase();
+      if (!contentType.startsWith('image/')) continue;
 
-    return new Response(resp.body, {
-      status: 200,
-      headers: {
-        'Content-Type': resp.headers.get('Content-Type') || 'image/png',
-        'Cache-Control': `public, max-age=${LIMITS.cache.iconTtlSeconds}`,
-      },
-    });
+      return new Response(resp.body, {
+        status: 200,
+        headers: {
+          'Content-Type': resp.headers.get('Content-Type') || 'image/png',
+          'Cache-Control': `public, max-age=${LIMITS.cache.iconTtlSeconds}`,
+        },
+      });
+    }
+
+    return handleNwFavicon();
   } catch {
     return handleNwFavicon();
   }
@@ -152,6 +173,12 @@ export async function handlePublicRoute(
         'Cache-Control': 'no-store',
       },
     });
+  }
+
+  if ((path === '/api/web-bootstrap' || path === '/web-bootstrap') && method === 'GET') {
+    const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+    if (blocked) return blocked;
+    return jsonResponse(buildWebBootstrapResponse(env));
   }
 
   const iconMatch = path.match(/^\/icons\/([^/]+)\/icon\.png$/i);
@@ -230,6 +257,18 @@ export async function handlePublicRoute(
 
   if ((path === '/identity/accounts/recover-2fa' || path === '/api/accounts/recover-2fa') && method === 'POST') {
     return handleRecoverTwoFactor(request, env);
+  }
+
+  if (path === '/api/accounts/password-hint' && method === 'POST') {
+    const blocked = await enforcePublicRateLimit('public-sensitive', LIMITS.rateLimit.sensitivePublicRequestsPerMinute);
+    if (blocked) return blocked;
+    if (!isSameOriginWriteRequest(request)) {
+      return new Response(JSON.stringify({ error: 'Forbidden origin' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return handleGetPasswordHint(request, env);
   }
 
   if ((path === '/config' || path === '/api/config') && method === 'GET') {

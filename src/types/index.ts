@@ -35,6 +35,7 @@ export interface User {
   id: string;
   email: string;
   name: string | null;
+  masterPasswordHint: string | null;
   masterPasswordHash: string;
   key: string;
   privateKey: string | null;
