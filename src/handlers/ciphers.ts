@@ -178,10 +178,12 @@ export async function handleGetCiphers(request: Request, env: Env, userId: strin
       : ciphers.filter(c => !c.deletedAt);
   }
 
-  const attachmentsByCipher = await storage.getAttachmentsByUserId(userId);
+  const attachmentsByCipher = await storage.getAttachmentsByCipherIds(
+    filteredCiphers.map((cipher) => cipher.id)
+  );
 
-  // Get attachments for all ciphers
-  const cipherResponses = [];
+  // Build responses only for the current page to keep pagination cheap.
+  const cipherResponses: CipherResponse[] = [];
   for (const cipher of filteredCiphers) {
     const attachments = attachmentsByCipher.get(cipher.id) || [];
     cipherResponses.push(cipherToResponse(cipher, attachments));

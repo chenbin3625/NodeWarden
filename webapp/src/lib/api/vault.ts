@@ -2,7 +2,6 @@ import { base64ToBytes, decryptBw, decryptBwFileData, decryptStr, encryptBw, enc
 import type {
   Cipher,
   Folder,
-  ListResponse,
   SessionState,
   VaultDraft,
   VaultDraftField,
@@ -16,12 +15,11 @@ import {
   type AuthedFetch,
 } from './shared';
 import { readResponseBytesWithProgress } from '../download';
+import { loadVaultSyncSnapshot } from './vault-sync';
 
 export async function getFolders(authedFetch: AuthedFetch): Promise<Folder[]> {
-  const resp = await authedFetch('/api/folders');
-  if (!resp.ok) throw new Error('Failed to load folders');
-  const body = await parseJson<ListResponse<Folder>>(resp);
-  return body?.data || [];
+  const body = await loadVaultSyncSnapshot(authedFetch);
+  return body.folders || [];
 }
 
 export async function createFolder(
@@ -93,10 +91,8 @@ export async function updateFolder(
 }
 
 export async function getCiphers(authedFetch: AuthedFetch): Promise<Cipher[]> {
-  const resp = await authedFetch('/api/ciphers?deleted=true');
-  if (!resp.ok) throw new Error('Failed to load ciphers');
-  const body = await parseJson<ListResponse<Cipher>>(resp);
-  return body?.data || [];
+  const body = await loadVaultSyncSnapshot(authedFetch);
+  return body.ciphers || [];
 }
 
 export interface CiphersImportPayload {
