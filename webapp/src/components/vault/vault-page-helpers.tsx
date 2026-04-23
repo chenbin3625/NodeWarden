@@ -37,7 +37,7 @@ export const CREATE_TYPE_OPTIONS: TypeOption[] = [
 
 export const VAULT_SORT_STORAGE_KEY = 'nodewarden.vault.sort.v1';
 export const MOBILE_LAYOUT_QUERY = '(max-width: 900px)';
-export const VAULT_LIST_ROW_HEIGHT = 66;
+export const VAULT_LIST_ROW_HEIGHT = 74;
 export const VAULT_LIST_OVERSCAN = 10;
 export const VAULT_SORT_OPTIONS: Array<{ value: VaultSortMode; label: string }> = [
   { value: 'edited', label: t('txt_sort_last_edited') },

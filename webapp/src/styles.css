@@ -176,6 +176,14 @@ body::before {
   text-shadow: 0 10px 22px rgba(255, 255, 255, 0.26);
 }
 
+.standalone-brand-wordmark {
+  display: block;
+  height: auto;
+  width: clamp(200px, 30vw, 360px);
+  max-width: 100%;
+  filter: drop-shadow(0 10px 22px rgba(43, 102, 217, 0.18));
+}
+
 .standalone-title {
   margin: 0 0 4px 0;
   text-align: left;
@@ -643,7 +651,7 @@ input[type='file'].input::file-selector-button:hover {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   font-size: 34px;
   font-weight: 800;
   color: var(--text);
@@ -653,6 +661,14 @@ input[type='file'].input::file-selector-button:hover {
   display: inline;
   letter-spacing: -0.045em;
   text-shadow: 0 12px 24px rgba(43, 102, 217, 0.14);
+}
+
+.brand-wordmark {
+  display: block;
+  height: auto;
+  width: clamp(210px, 20vw, 290px);
+  max-width: 100%;
+  filter: drop-shadow(0 12px 24px rgba(43, 102, 217, 0.12));
 }
 
 .mobile-page-title {
@@ -669,8 +685,8 @@ input[type='file'].input::file-selector-button:hover {
 }
 
 .brand-logo {
-  width: 57px;
-  height: 57px;
+  width: 42px;
+  height: 42px;
   object-fit: contain;
   filter: drop-shadow(0 10px 22px rgba(43, 102, 217, 0.22));
   transition: transform var(--dur-medium) var(--ease-out-soft), filter var(--dur-medium) var(--ease-out-soft);
@@ -4646,7 +4662,9 @@ input[type='file'].input::file-selector-button:hover {
 }
 
 :root[data-theme='dark'] .standalone-brand-title,
-:root[data-theme='dark'] .brand-name {
+:root[data-theme='dark'] .brand-name,
+:root[data-theme='dark'] .standalone-brand-wordmark,
+:root[data-theme='dark'] .brand-wordmark {
   text-shadow: 0 16px 28px rgba(2, 6, 23, 0.32);
 }
 
