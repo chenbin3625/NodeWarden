@@ -66,6 +66,15 @@ function handleNwFavicon(): Response {
   });
 }
 
+function handleMissingWebsiteIcon(): Response {
+  return new Response(null, {
+    status: 404,
+    headers: {
+      'Cache-Control': 'public, max-age=300',
+    },
+  });
+}
+
 function buildIconServiceBase(origin: string): string {
   return `${origin}/icons`;
 }
@@ -127,9 +136,9 @@ function normalizeIconHost(rawHost: string): string | null {
   }
 }
 
-async function handleWebsiteIcon(host: string): Promise<Response> {
+async function handleWebsiteIcon(host: string, fallbackMode: 'default' | 'not-found' = 'default'): Promise<Response> {
   const normalizedHost = normalizeIconHost(host);
-  if (!normalizedHost) return handleNwFavicon();
+  if (!normalizedHost) return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
 
   const encodedHost = encodeURIComponent(normalizedHost);
   const requestHeaders = { 'User-Agent': 'NodeWarden/1.0' };
@@ -172,9 +181,9 @@ async function handleWebsiteIcon(host: string): Promise<Response> {
       });
     }
 
-    return handleNwFavicon();
+    return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
   } catch {
-    return handleNwFavicon();
+    return fallbackMode === 'not-found' ? handleMissingWebsiteIcon() : handleNwFavicon();
   }
 }
 
@@ -221,7 +230,8 @@ export async function handlePublicRoute(
 
   const iconMatch = path.match(/^\/icons\/([^/]+)\/icon\.png$/i);
   if (iconMatch && method === 'GET') {
-    return handleWebsiteIcon(iconMatch[1]);
+    const fallbackMode = new URL(request.url).searchParams.get('fallback') === '404' ? 'not-found' : 'default';
+    return handleWebsiteIcon(iconMatch[1], fallbackMode);
   }
 
   const publicAttachmentMatch = path.match(/^\/api\/attachments\/([a-f0-9-]+)\/([a-f0-9-]+)$/i);

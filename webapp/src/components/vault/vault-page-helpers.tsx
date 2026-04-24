@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import {
   CreditCard,
   FileKey2,
@@ -161,7 +161,7 @@ export function hostFromUri(uri: string): string {
 }
 
 export function websiteIconUrl(host: string): string {
-  return `/icons/${encodeURIComponent(host)}/icon.png`;
+  return `/icons/${encodeURIComponent(host)}/icon.png?fallback=404`;
 }
 
 export function createEmptyLoginUri(): VaultDraftLoginUri {
@@ -433,6 +433,10 @@ export function VaultListIcon({ cipher }: { cipher: Cipher }) {
   const uri = firstCipherUri(cipher);
   const host = hostFromUri(uri);
   const [errored, setErrored] = useState(() => (host ? failedIconHosts.has(host) : false));
+  useEffect(() => {
+    setErrored(host ? failedIconHosts.has(host) : false);
+  }, [host]);
+
   if (host && !errored) {
     return (
       <img
