@@ -90,6 +90,39 @@ type SessionTimeoutAction = 'lock' | 'logout';
 const LOCK_TIMEOUT_STORAGE_KEY = 'nodewarden.lock.timeout-minutes.v1';
 const SESSION_TIMEOUT_ACTION_STORAGE_KEY = 'nodewarden.session.timeout-action.v1';
 const LOCK_TIMEOUT_VALUES = new Set<LockTimeoutMinutes>([0, 1, 5, 15, 30]);
+const DECRYPT_BATCH_SIZE = 16;
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+      window.setTimeout(resolve, 0);
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
+
+async function mapAsyncInBatches<T, R>(
+  items: readonly T[],
+  mapper: (item: T, index: number) => Promise<R>,
+  options?: { batchSize?: number; shouldContinue?: () => boolean }
+): Promise<R[]> {
+  const batchSize = Math.max(1, options?.batchSize || DECRYPT_BATCH_SIZE);
+  const result: R[] = new Array(items.length);
+  for (let start = 0; start < items.length; start += batchSize) {
+    if (options?.shouldContinue && !options.shouldContinue()) break;
+    const end = Math.min(items.length, start + batchSize);
+    const chunk = items.slice(start, end);
+    const mapped = await Promise.all(chunk.map((item, offset) => mapper(item, start + offset)));
+    for (let i = 0; i < mapped.length; i += 1) {
+      result[start + i] = mapped[i];
+    }
+    if (end < items.length) {
+      await yieldToMainThread();
+    }
+  }
+  return result;
+}
 
 function readThemePreference(): ThemePreference {
   if (typeof window === 'undefined') return 'system';
@@ -169,6 +202,7 @@ export default function App() {
   const [decryptedFolders, setDecryptedFolders] = useState<VaultFolder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
+  const [vaultInitialDecryptDone, setVaultInitialDecryptDone] = useState(false);
   const sessionRef = useRef<SessionState | null>(initialBootstrap.session);
   const migratedPlainFolderIdsRef = useRef<Set<string>>(new Set());
   const silentRefreshVaultRef = useRef<() => Promise<void>>(async () => {});
@@ -740,37 +774,38 @@ export default function App() {
   const sendsQuery = useQuery({
     queryKey: ['sends', session?.accessToken],
     queryFn: () => getSends(authedFetch),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey,
+    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && (vaultInitialDecryptDone || location === '/sends'),
   });
   const usersQuery = useQuery({
     queryKey: ['admin-users', session?.accessToken],
     queryFn: () => listAdminUsers(authedFetch),
-    enabled: phase === 'app' && profile?.role === 'admin',
+    enabled: phase === 'app' && profile?.role === 'admin' && vaultInitialDecryptDone,
   });
   const invitesQuery = useQuery({
     queryKey: ['admin-invites', session?.accessToken],
     queryFn: () => listAdminInvites(authedFetch),
-    enabled: phase === 'app' && profile?.role === 'admin',
+    enabled: phase === 'app' && profile?.role === 'admin' && vaultInitialDecryptDone,
   });
   const totpStatusQuery = useQuery({
     queryKey: ['totp-status', session?.accessToken],
     queryFn: () => getTotpStatus(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
   });
   const authorizedDevicesQuery = useQuery({
     queryKey: ['authorized-devices', session?.accessToken],
     queryFn: () => getAuthorizedDevices(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
   });
 
   useEffect(() => {
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
+    if (!vaultInitialDecryptDone) return;
     if (!profile?.role || profile.role !== 'admin') return;
     if (repairAttemptRef.current === session.accessToken) return;
 
     repairAttemptRef.current = session.accessToken;
     void silentlyRepairBackupSettingsIfNeeded(session, profile);
-  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, profile]);
+  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, profile, vaultInitialDecryptDone]);
 
   useEffect(() => {
     if (session?.accessToken) return;
@@ -782,9 +817,10 @@ export default function App() {
       setDecryptedFolders([]);
       setDecryptedCiphers([]);
       setDecryptedSends([]);
+      setVaultInitialDecryptDone(false);
       return;
     }
-    if (!foldersQuery.data || !ciphersQuery.data || !sendsQuery.data) return;
+    if (!foldersQuery.data || !ciphersQuery.data) return;
 
     let active = true;
     (async () => {
@@ -814,7 +850,8 @@ export default function App() {
         const decryptFieldWithSource = async (
           value: string | null | undefined,
           itemEnc: Uint8Array,
-          itemMac: Uint8Array
+          itemMac: Uint8Array,
+          canFallbackToUserKey: boolean
         ): Promise<{ text: string; source: 'item' | 'user' | 'plain' }> => {
           const raw = String(value || '').trim();
           if (!raw) return { text: '', source: 'plain' };
@@ -823,7 +860,7 @@ export default function App() {
           } catch {
             // 继续尝试旧 user key 数据。
           }
-          if (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey)) {
+          if (canFallbackToUserKey) {
             try {
               return { text: await decryptStr(raw, encKey, macKey), source: 'user' };
             } catch {
@@ -833,15 +870,18 @@ export default function App() {
           return { text: raw, source: 'plain' };
         };
 
-        const folders = await Promise.all(
-          foldersQuery.data.map(async (folder) => ({
+        const folders = await mapAsyncInBatches(
+          foldersQuery.data,
+          async (folder) => ({
             ...folder,
             decName: await decryptField(folder.name, encKey, macKey),
-          }))
+          }),
+          { shouldContinue: () => active }
         );
 
-        const ciphers = await Promise.all(
-          ciphersQuery.data.map(async (cipher) => {
+        const ciphers = await mapAsyncInBatches(
+          ciphersQuery.data,
+          async (cipher) => {
             let itemEnc = encKey;
             let itemMac = macKey;
             if (cipher.key) {
@@ -853,6 +893,7 @@ export default function App() {
                 // keep user key when item key decrypt fails
               }
             }
+            const itemUsesUserKey = sameBytes(itemEnc, encKey) && sameBytes(itemMac, macKey);
 
             const nextCipher: Cipher = {
               ...cipher,
@@ -939,7 +980,7 @@ export default function App() {
               nextCipher.attachments = await Promise.all(
                 cipher.attachments.map(async (attachment) => {
                   const attachmentId = String(attachment?.id || '').trim();
-                  const fileNameResult = await decryptFieldWithSource(attachment.fileName || '', itemEnc, itemMac);
+                  const fileNameResult = await decryptFieldWithSource(attachment.fileName || '', itemEnc, itemMac, !itemUsesUserKey);
                   const metadata: { fileName?: string; key?: string | null } = {};
 
                   if (attachmentId && fileNameResult.source === 'user') {
@@ -951,7 +992,7 @@ export default function App() {
                     attachmentId &&
                     attachmentKey &&
                     looksLikeCipherString(attachmentKey) &&
-                    (!sameBytes(itemEnc, encKey) || !sameBytes(itemMac, macKey))
+                    !itemUsesUserKey
                   ) {
                     try {
                       await decryptBw(attachmentKey, itemEnc, itemMac);
@@ -979,11 +1020,52 @@ export default function App() {
               );
             }
             return nextCipher;
-          })
+          },
+          { shouldContinue: () => active }
         );
 
-        const sends = await Promise.all(
-          sendsQuery.data.map(async (send) => {
+        if (!active) return;
+        setDecryptedFolders(folders);
+        setDecryptedCiphers(ciphers);
+        setVaultInitialDecryptDone(true);
+      } catch (error) {
+        if (!active) return;
+        pushToast('error', error instanceof Error ? error.message : t('txt_decrypt_failed_2'));
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [session?.symEncKey, session?.symMacKey, foldersQuery.data, ciphersQuery.data]);
+
+  useEffect(() => {
+    if (!session?.symEncKey || !session?.symMacKey) {
+      setDecryptedSends([]);
+      return;
+    }
+    if (!sendsQuery.data) return;
+
+    let active = true;
+    (async () => {
+      try {
+        const encKey = base64ToBytes(session.symEncKey!);
+        const macKey = base64ToBytes(session.symMacKey!);
+        const decryptField = async (
+          value: string | null | undefined,
+          fieldEnc: Uint8Array = encKey,
+          fieldMac: Uint8Array = macKey
+        ): Promise<string> => {
+          if (!value || typeof value !== 'string') return '';
+          try {
+            return await decryptStr(value, fieldEnc, fieldMac);
+          } catch {
+            return value;
+          }
+        };
+        const sends = await mapAsyncInBatches(
+          sendsQuery.data,
+          async (send) => {
             const nextSend: Send = { ...send };
             try {
               if (send.key) {
@@ -1011,12 +1093,11 @@ export default function App() {
               nextSend.decName = t('txt_decrypt_failed');
             }
             return nextSend;
-          })
+          },
+          { shouldContinue: () => active }
         );
 
         if (!active) return;
-        setDecryptedFolders(folders);
-        setDecryptedCiphers(ciphers);
         setDecryptedSends(sends);
       } catch (error) {
         if (!active) return;
@@ -1027,7 +1108,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [session?.symEncKey, session?.symMacKey, foldersQuery.data, ciphersQuery.data, sendsQuery.data]);
+  }, [session?.symEncKey, session?.symMacKey, sendsQuery.data]);
 
   useEffect(() => {
     if (!session?.symEncKey || !session?.symMacKey || !foldersQuery.data?.length) return;
@@ -1061,7 +1142,7 @@ export default function App() {
   silentRefreshVaultRef.current = refreshVaultSilently;
 
   useEffect(() => {
-    if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
+    if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey || !vaultInitialDecryptDone) return;
 
     let disposed = false;
     let socket: WebSocket | null = null;
@@ -1187,7 +1268,7 @@ export default function App() {
         }
       }
     };
-  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey]);
+  }, [phase, session?.accessToken, session?.symEncKey, session?.symMacKey, vaultInitialDecryptDone]);
 
   const vaultSendActions = useVaultSendActions({
     authedFetch,
@@ -1201,6 +1282,7 @@ export default function App() {
     refetchFolders: foldersQuery.refetch,
     refetchSends: sendsQuery.refetch,
     onNotify: pushToast,
+    patchDecryptedCiphers: setDecryptedCiphers,
   });
   const accountSecurityActions = useAccountSecurityActions({
     authedFetch,
@@ -1227,6 +1309,7 @@ export default function App() {
   });
 
   refreshAuthorizedDevicesRef.current = async () => {
+    if (!vaultInitialDecryptDone) return;
     await authorizedDevicesQuery.refetch();
   };
 

@@ -12,7 +12,9 @@
 .topbar {
   @apply flex h-[58px] items-center justify-between border-b px-[18px] text-slate-900 transition;
   border-color: var(--line-soft);
-  background: rgba(244, 248, 255, 0.82);
+  background: rgba(244, 248, 255, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .brand {
@@ -20,9 +22,12 @@
 }
 
 .brand-wordmark {
-  @apply block h-auto max-w-full;
-  width: clamp(210px, 20vw, 290px);
-  filter: drop-shadow(0 12px 24px rgba(43, 102, 217, 0.12));
+  @apply block max-w-full;
+  width: clamp(168px, 17vw, 224px);
+  aspect-ratio: 862 / 102;
+  background: #116ff9;
+  mask: url('/nodewarden-wordmark.svg') center / contain no-repeat;
+  -webkit-mask: url('/nodewarden-wordmark.svg') center / contain no-repeat;
 }
 
 .mobile-page-title {
@@ -31,7 +36,7 @@
 }
 
 .brand-logo {
-  @apply h-[42px] w-[42px] object-contain;
+  @apply h-[42px] w-[53px] object-contain;
   filter: drop-shadow(0 10px 22px rgba(43, 102, 217, 0.22));
 }
 
