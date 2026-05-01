@@ -28,6 +28,15 @@ export default defineConfig({
 
           const normalized = id.replace(/\\/g, '/');
 
+          const localeMatch = normalized.match(/\/src\/lib\/i18n\/locales\/(.+)\.ts$/);
+          if (localeMatch) {
+            return `i18n-${localeMatch[1]}`;
+          }
+
+          if (normalized.includes('/src/lib/i18n.ts')) {
+            return 'i18n-core';
+          }
+
           if (
             normalized.includes('/src/components/AuthViews.tsx') ||
             normalized.includes('/src/components/PublicSendPage.tsx') ||
