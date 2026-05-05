@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useLocation } from 'wouter';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import AppAuthenticatedShell from '@/components/AppAuthenticatedShell';
 import AppGlobalOverlays, { type AppConfirmState } from '@/components/AppGlobalOverlays';
 import AuthViews from '@/components/AuthViews';
+import NotFoundPage from '@/components/NotFoundPage';
 import PublicSendPage from '@/components/PublicSendPage';
 import RecoverTwoFactorPage from '@/components/RecoverTwoFactorPage';
 import JwtWarningPage from '@/components/JwtWarningPage';
@@ -29,6 +30,7 @@ import {
   parseSignalRTextFrames,
   readInviteCodeFromUrl,
 } from '@/lib/app-support';
+import { preloadAuthenticatedWorkspace, preloadDemoExperience } from '@/lib/app-preload';
 import {
   bootstrapAppSession,
   type CompletedLogin,
@@ -52,7 +54,21 @@ import { APP_NOTIFY_EVENT, type AppNotifyDetail } from '@/lib/app-notify';
 import { dispatchBackupProgress, type BackupProgressDetail } from '@/lib/backup-restore-progress';
 import { decryptSends, decryptVaultCore } from '@/lib/vault-decrypt';
 import { decryptSendsInWorker, decryptVaultCoreInWorker } from '@/lib/vault-worker';
-import type { AppPhase, Cipher, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
+import {
+  DEMO_CIPHERS,
+  DEMO_ADMIN_INVITES,
+  DEMO_ADMIN_USERS,
+  DEMO_AUTHORIZED_DEVICES,
+  DEMO_FOLDERS,
+  DEMO_SENDS,
+  createDemoBackupSettings,
+  IS_DEMO_MODE,
+  createDemoCompletedLogin,
+  createDemoInitialBootstrapState,
+  createDemoMainRoutesProps,
+} from '@/lib/demo';
+import type { AdminBackupSettings } from '@/lib/api/backup';
+import type { AdminInvite, AdminUser, AppPhase, AuthorizedDevice, Cipher, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
 import type { VaultCoreSnapshot } from '@/lib/vault-cache';
 
 function isBackupProgressDetail(value: unknown): value is BackupProgressDetail {
@@ -71,9 +87,31 @@ const IMPORT_ROUTE_PATHS = [IMPORT_ROUTE, '/tools/import', '/tools/import-export
 const IMPORT_ROUTE_ALIASES: ReadonlySet<string> = new Set(IMPORT_ROUTE_PATHS.filter((path) => path !== IMPORT_ROUTE));
 const SETTINGS_HOME_ROUTE = '/settings';
 const SETTINGS_ACCOUNT_ROUTE = '/settings/account';
+const AUTH_ROUTE_PATHS = ['/', '/login', '/register', '/lock', '/recover-2fa'] as const;
+const APP_ROUTE_PATHS = [
+  '/',
+  '/vault',
+  '/vault/totp',
+  '/sends',
+  '/admin',
+  '/security/devices',
+  '/backup',
+  '/settings',
+  SETTINGS_ACCOUNT_ROUTE,
+  '/help',
+  ...IMPORT_ROUTE_PATHS,
+] as const;
+const AUTH_ROUTES: ReadonlySet<string> = new Set(AUTH_ROUTE_PATHS);
+const APP_ROUTES: ReadonlySet<string> = new Set(APP_ROUTE_PATHS);
 
 function isAdminProfile(profile: Profile | null): profile is Profile {
   return String(profile?.role || '').toLowerCase() === 'admin';
+}
+
+function normalizeRoutePath(path: string): string {
+  const pathOnly = String(path || '/').split('?')[0].split('#')[0];
+  const normalized = pathOnly.startsWith('/') ? pathOnly : `/${pathOnly}`;
+  return normalized.length > 1 ? normalized.replace(/\/+$/, '') : '/';
 }
 const THEME_STORAGE_KEY = 'nodewarden.theme.preference.v1';
 const SIGNALR_RECORD_SEPARATOR = String.fromCharCode(0x1e);
@@ -114,9 +152,16 @@ function readSessionTimeoutAction(): SessionTimeoutAction {
 }
 
 export default function App() {
-  const initialBootstrap = useMemo(() => readInitialAppBootstrapState(), []);
+  const initialBootstrap = useMemo(
+    () => (IS_DEMO_MODE ? createDemoInitialBootstrapState() : readInitialAppBootstrapState()),
+    []
+  );
   const initialInviteCode = useMemo(() => readInviteCodeFromUrl(), []);
-  const initialProfileSnapshot = useMemo(() => loadProfileSnapshot(initialBootstrap.session?.email), [initialBootstrap]);
+  const initialProfileSnapshot = useMemo(
+    () => (IS_DEMO_MODE ? null : loadProfileSnapshot(initialBootstrap.session?.email)),
+    [initialBootstrap]
+  );
+  const queryClient = useQueryClient();
   const [pendingAuthAction, setPendingAuthAction] = useState<'login' | 'register' | 'unlock' | null>(null);
   const [location, navigate] = useLocation();
   const [phase, setPhase] = useState<AppPhase>(initialBootstrap.phase);
@@ -167,8 +212,14 @@ export default function App() {
   const [decryptedFolders, setDecryptedFolders] = useState<VaultFolder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
+  const [demoUsers, setDemoUsers] = useState<AdminUser[]>(() => DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+  const [demoInvites, setDemoInvites] = useState<AdminInvite[]>(() => DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+  const [demoAuthorizedDevices, setDemoAuthorizedDevices] = useState<AuthorizedDevice[]>(() => DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+  const [demoBackupSettings, setDemoBackupSettings] = useState<AdminBackupSettings>(() => createDemoBackupSettings());
   const [cachedVaultCore, setCachedVaultCore] = useState<VaultCoreSnapshot | null>(null);
   const [vaultInitialDecryptDone, setVaultInitialDecryptDone] = useState(false);
+  const [vaultDecryptError, setVaultDecryptError] = useState('');
+  const [sendsDecryptDone, setSendsDecryptDone] = useState(false);
   const sessionRef = useRef<SessionState | null>(initialBootstrap.session);
   const silentRefreshVaultRef = useRef<() => Promise<void>>(async () => {});
   const refreshAuthorizedDevicesRef = useRef<() => Promise<void>>(async () => {});
@@ -267,6 +318,7 @@ export default function App() {
   }, [themePreference]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     saveProfileSnapshot(profile);
   }, [profile]);
 
@@ -347,6 +399,22 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (IS_DEMO_MODE) {
+      const currentHashPath = typeof window !== 'undefined'
+        ? (window.location.hash || '').replace(/^#/, '').split('?')[0].split('#')[0]
+        : '';
+      const normalizedCurrentHashPath = currentHashPath.replace(/^\/+/, '').replace(/\/+$/, '');
+      const isDemoPublicSendRoute = /^send\/[^/]+(?:\/[^/]+)?$/i.test(normalizedCurrentHashPath);
+      setDefaultKdfIterations(initialBootstrap.defaultKdfIterations);
+      setJwtWarning(null);
+      setSession(null);
+      setProfile(null);
+      setPhase('login');
+      setUnlockPreparing(false);
+      if (!isDemoPublicSendRoute && location !== '/login') navigate('/login');
+      return;
+    }
+
     let mounted = true;
     (async () => {
       const boot = await bootstrapAppSession(initialBootstrap);
@@ -366,6 +434,7 @@ export default function App() {
 
   useEffect(() => {
     if (phase !== 'locked' || !session) return;
+    if (IS_DEMO_MODE) return;
     let cancelled = false;
     void (async () => {
       const result = await hydrateLockedSession(session, profile);
@@ -414,6 +483,15 @@ export default function App() {
 
   async function handleLogin() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      setPendingAuthAction('login');
+      try {
+        await finalizeLogin(createDemoCompletedLogin(loginValues.email), t('txt_login_success'));
+      } finally {
+        setPendingAuthAction(null);
+      }
+      return;
+    }
     if (!loginValues.email || !loginValues.password) {
       pushToast('error', t('txt_please_input_email_and_password'));
       return;
@@ -486,6 +564,12 @@ export default function App() {
 
   async function handleRegister() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      pushToast('warning', t('txt_demo_readonly_message'));
+      setPhase('login');
+      navigate('/login');
+      return;
+    }
     if (!registerValues.email || !registerValues.password) {
       pushToast('error', t('txt_please_input_email_and_password'));
       return;
@@ -534,6 +618,10 @@ export default function App() {
 
   async function handleTogglePasswordHint() {
     if (pendingAuthAction) return;
+    if (IS_DEMO_MODE) {
+      openPasswordHintDialog(t('txt_demo_master_password_hint'));
+      return;
+    }
     const email = loginValues.email.trim().toLowerCase();
     if (!email) return;
 
@@ -568,12 +656,21 @@ export default function App() {
 
   function handleShowLockedPasswordHint() {
     if (pendingAuthAction) return;
-    openPasswordHintDialog(profile?.masterPasswordHint ?? null);
+    openPasswordHintDialog((IS_DEMO_MODE ? t('txt_demo_master_password_hint') : profile?.masterPasswordHint) ?? null);
   }
 
   async function handleUnlock() {
     if (pendingAuthAction) return;
     if (!session?.email) return;
+    if (IS_DEMO_MODE) {
+      setPendingAuthAction('unlock');
+      try {
+        await finalizeLogin(createDemoCompletedLogin(session.email), t('txt_unlocked'));
+      } finally {
+        setPendingAuthAction(null);
+      }
+      return;
+    }
     if (!unlockPassword) {
       pushToast('error', t('txt_please_input_master_password'));
       return;
@@ -625,7 +722,9 @@ export default function App() {
   }
 
   function logoutNow() {
-    void revokeCurrentSession(sessionRef.current);
+    if (!IS_DEMO_MODE) {
+      void revokeCurrentSession(sessionRef.current);
+    }
     setConfirm(null);
     setSession(null);
     clearProfileSnapshot();
@@ -731,6 +830,36 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!IS_DEMO_MODE) return;
+    if (phase !== 'app') {
+      setDecryptedFolders([]);
+      setDecryptedCiphers([]);
+      setDecryptedSends([]);
+      setDemoUsers(DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+      setDemoInvites(DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+      setDemoAuthorizedDevices(DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+      setDemoBackupSettings(createDemoBackupSettings());
+      setVaultInitialDecryptDone(false);
+      setSendsDecryptDone(false);
+      return;
+    }
+    setDecryptedFolders(DEMO_FOLDERS.map((folder) => ({ ...folder })));
+    setDecryptedCiphers(DEMO_CIPHERS.map((cipher) => ({ ...cipher })));
+    setDecryptedSends(DEMO_SENDS.map((send) => ({ ...send })));
+    setDemoUsers(DEMO_ADMIN_USERS.map((user) => ({ ...user })));
+    setDemoInvites(DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
+    setDemoAuthorizedDevices(DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
+    setDemoBackupSettings(createDemoBackupSettings());
+    setVaultDecryptError('');
+    setVaultInitialDecryptDone(true);
+    setSendsDecryptDone(true);
+  }, [phase]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) {
+      setCachedVaultCore(null);
+      return;
+    }
     let cancelled = false;
     if (phase !== 'app' || !session?.symEncKey || !session?.symMacKey || !vaultCacheKey) {
       setCachedVaultCore(null);
@@ -763,22 +892,35 @@ export default function App() {
   const vaultCoreQuery = useQuery({
     queryKey: ['vault-core', vaultCacheKey],
     queryFn: () => loadVaultCoreSyncSnapshot(authedFetch, vaultCacheKey),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && !!vaultCacheKey,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && !!vaultCacheKey,
     staleTime: 30_000,
   });
   const encryptedVaultCore = vaultCoreQuery.data || cachedVaultCore;
   const encryptedFolders = encryptedVaultCore?.folders;
   const encryptedCiphers = encryptedVaultCore?.ciphers;
+  const encryptedSendsFromSync = encryptedVaultCore?.sends;
+  const sendsQueryKey = useMemo(() => ['sends', vaultCacheKey || session?.email] as const, [vaultCacheKey, session?.email]);
   const sendsQuery = useQuery({
-    queryKey: ['sends', vaultCacheKey || session?.email],
+    queryKey: sendsQueryKey,
     queryFn: () => getSends(authedFetch),
-    enabled: phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && (vaultInitialDecryptDone || location === '/sends'),
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.symEncKey && !!session?.symMacKey && location === '/sends' && !encryptedSendsFromSync,
     staleTime: 30_000,
   });
+  const encryptedSends = sendsQuery.data || encryptedSendsFromSync;
+  async function refetchSendsFromVaultCore() {
+    const result = await refetchVaultCoreData() as { data?: VaultCoreSnapshot };
+    const sends = Array.isArray(result.data?.sends) ? result.data.sends : [];
+    queryClient.setQueryData(sendsQueryKey, sends);
+    return { data: sends };
+  }
+  useEffect(() => {
+    if (!Array.isArray(encryptedSendsFromSync)) return;
+    queryClient.setQueryData(sendsQueryKey, encryptedSendsFromSync);
+  }, [queryClient, sendsQueryKey, encryptedSendsFromSync]);
   const profileQuery = useQuery({
     queryKey: ['profile', vaultCacheKey || session?.email],
     queryFn: () => getProfile(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken,
     staleTime: 30_000,
   });
   useEffect(() => {
@@ -790,29 +932,47 @@ export default function App() {
   const usersQuery = useQuery({
     queryKey: ['admin-users', vaultCacheKey],
     queryFn: () => listAdminUsers(authedFetch),
-    enabled: phase === 'app' && isAdmin && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const invitesQuery = useQuery({
     queryKey: ['admin-invites', vaultCacheKey],
     queryFn: () => listAdminInvites(authedFetch),
-    enabled: phase === 'app' && isAdmin && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const totpStatusQuery = useQuery({
     queryKey: ['totp-status', vaultCacheKey || session?.email],
     queryFn: () => getTotpStatus(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
   const authorizedDevicesQuery = useQuery({
     queryKey: ['authorized-devices', vaultCacheKey || session?.email],
     queryFn: () => getAuthorizedDevices(authedFetch),
-    enabled: phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
+    enabled: !IS_DEMO_MODE && phase === 'app' && !!session?.accessToken && vaultInitialDecryptDone,
+    staleTime: 30_000,
+  });
+  useQuery({
+    queryKey: ['admin-backup-settings', vaultCacheKey],
+    queryFn: () => backupActions.loadSettings(),
+    enabled: !IS_DEMO_MODE && phase === 'app' && isAdmin && vaultInitialDecryptDone,
     staleTime: 30_000,
   });
 
   useEffect(() => {
+    if (!IS_DEMO_MODE) return;
+    return preloadDemoExperience();
+  }, []);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) return;
+    if (phase !== 'app' || !vaultInitialDecryptDone) return;
+    void preloadAuthenticatedWorkspace(isAdmin);
+  }, [phase, vaultInitialDecryptDone, isAdmin]);
+
+  useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey) return;
     if (!vaultInitialDecryptDone) return;
     if (!isAdminProfile(profile)) return;
@@ -828,11 +988,14 @@ export default function App() {
   }, [session?.accessToken]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (!session?.symEncKey || !session?.symMacKey) {
       setDecryptedFolders([]);
       setDecryptedCiphers([]);
       setDecryptedSends([]);
       setVaultInitialDecryptDone(false);
+      setVaultDecryptError('');
+      setSendsDecryptDone(false);
       return;
     }
     if (!encryptedFolders || !encryptedCiphers) return;
@@ -840,6 +1003,7 @@ export default function App() {
     let active = true;
     (async () => {
       try {
+        setVaultDecryptError('');
         let result;
         try {
           result = await decryptVaultCoreInWorker({
@@ -863,7 +1027,10 @@ export default function App() {
         setVaultInitialDecryptDone(true);
       } catch (error) {
         if (!active) return;
-        pushToast('error', error instanceof Error ? error.message : t('txt_decrypt_failed_2'));
+        const message = error instanceof Error ? error.message : t('txt_decrypt_failed_2');
+        setVaultDecryptError(message);
+        setVaultInitialDecryptDone(true);
+        pushToast('error', message);
       }
     })();
 
@@ -873,26 +1040,37 @@ export default function App() {
   }, [session?.symEncKey, session?.symMacKey, encryptedFolders, encryptedCiphers]);
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (!session?.symEncKey || !session?.symMacKey) {
       setDecryptedSends([]);
+      setSendsDecryptDone(false);
       return;
     }
-    if (!sendsQuery.data) return;
+    if (!encryptedSends) {
+      setSendsDecryptDone(false);
+      return;
+    }
+    if (!encryptedSends.length) {
+      setDecryptedSends([]);
+      setSendsDecryptDone(true);
+      return;
+    }
 
     let active = true;
+    setSendsDecryptDone(false);
     (async () => {
       try {
         let sends;
         try {
           sends = await decryptSendsInWorker({
-            sends: sendsQuery.data,
+            sends: encryptedSends,
             symEncKeyB64: session.symEncKey!,
             symMacKeyB64: session.symMacKey!,
             origin: window.location.origin,
           });
         } catch {
           sends = await decryptSends({
-            sends: sendsQuery.data,
+            sends: encryptedSends,
             symEncKeyB64: session.symEncKey!,
             symMacKeyB64: session.symMacKey!,
             origin: window.location.origin,
@@ -901,8 +1079,10 @@ export default function App() {
 
         if (!active) return;
         setDecryptedSends(sends);
+        setSendsDecryptDone(true);
       } catch (error) {
         if (!active) return;
+        setSendsDecryptDone(true);
         pushToast('error', error instanceof Error ? error.message : t('txt_decrypt_failed_2'));
       }
     })();
@@ -910,18 +1090,14 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [session?.symEncKey, session?.symMacKey, sendsQuery.data]);
+  }, [session?.symEncKey, session?.symMacKey, encryptedSends]);
 
   async function refreshVaultSilently() {
     if (pendingVaultCoreRefreshRef.current) {
       await pendingVaultCoreRefreshRef.current;
       return;
     }
-    const tasks: Promise<unknown>[] = [refetchVaultCoreData()];
-    if (location === '/sends') {
-      tasks.push(sendsQuery.refetch());
-    }
-    const request = Promise.all(tasks).finally(() => {
+    const request = refetchVaultCoreData().finally(() => {
       if (pendingVaultCoreRefreshRef.current === request) {
         pendingVaultCoreRefreshRef.current = null;
       }
@@ -933,6 +1109,7 @@ export default function App() {
   silentRefreshVaultRef.current = refreshVaultSilently;
 
   useEffect(() => {
+    if (IS_DEMO_MODE) return;
     if (phase !== 'app' || !session?.accessToken || !session?.symEncKey || !session?.symMacKey || !vaultInitialDecryptDone) return;
 
     let disposed = false;
@@ -1087,7 +1264,7 @@ export default function App() {
       const result = await refetchVaultCoreData() as { data?: VaultCoreSnapshot };
       return { data: result.data?.folders };
     },
-    refetchSends: sendsQuery.refetch,
+    refetchSends: refetchSendsFromVaultCore,
     onNotify: pushToast,
     patchDecryptedCiphers: setDecryptedCiphers,
     patchDecryptedFolders: setDecryptedFolders,
@@ -1127,11 +1304,17 @@ export default function App() {
   const trimmedHashPath = hashPathOnly.replace(/^\/+/, '').replace(/\/+$/, '');
   const normalizedHashPath = trimmedHashPath ? `/${trimmedHashPath}` : '/';
   const isImportHashRoute = IMPORT_ROUTE_ALIASES.has(normalizedHashPath);
-  const effectiveLocation = hashPath.startsWith('/send/') || hashPath === '/recover-2fa' ? hashPath : location;
+  const normalizedLocation = normalizeRoutePath(location);
+  const routeLocation = hashPath.startsWith('/') ? normalizedHashPath : normalizedLocation;
+  const effectiveLocation = routeLocation;
   const publicSendMatch = effectiveLocation.match(/^\/send\/([^/]+)(?:\/([^/]+))?\/?$/i);
   const isRecoverTwoFactorRoute = effectiveLocation === '/recover-2fa';
   const isPublicSendRoute = !!publicSendMatch;
-  const isImportRoute = location === IMPORT_ROUTE || IMPORT_ROUTE_ALIASES.has(location);
+  const isMalformedSendRoute = /^\/send(?:\/|$)/i.test(effectiveLocation) && !publicSendMatch;
+  const isKnownAuthRoute = AUTH_ROUTES.has(routeLocation) || isPublicSendRoute || isRecoverTwoFactorRoute;
+  const isKnownAppRoute = APP_ROUTES.has(routeLocation) || isPublicSendRoute || isImportHashRoute;
+  const isUnknownRoute = isMalformedSendRoute || (phase === 'app' ? !isKnownAppRoute : !isKnownAuthRoute && !APP_ROUTES.has(routeLocation));
+  const isImportRoute = routeLocation === IMPORT_ROUTE || IMPORT_ROUTE_ALIASES.has(routeLocation);
   const showSidebarToggle = mobileLayout && (location === '/vault' || location === '/sends');
   const sidebarToggleTitle = location === '/vault' ? t('txt_folders') : t('txt_type');
   const mobilePrimaryRoute =
@@ -1178,6 +1361,7 @@ export default function App() {
 
   const mainRoutesProps = {
     profile,
+    profileLoading: profileQuery.isFetching && !profile,
     session,
     mobileLayout,
     mobileSidebarToggleKey,
@@ -1187,16 +1371,20 @@ export default function App() {
     decryptedCiphers,
     decryptedFolders,
     decryptedSends,
-    ciphersLoading: vaultCoreQuery.isFetching && !encryptedVaultCore,
-    foldersLoading: vaultCoreQuery.isFetching && !encryptedVaultCore,
-    sendsLoading: sendsQuery.isFetching && !sendsQuery.data,
+    vaultError: vaultCoreQuery.isError && !encryptedVaultCore ? t('txt_load_vault_failed') : vaultDecryptError,
+    ciphersLoading: !(vaultCoreQuery.isError && !encryptedVaultCore) && !vaultDecryptError && !vaultInitialDecryptDone,
+    foldersLoading: !(vaultCoreQuery.isError && !encryptedVaultCore) && !vaultDecryptError && !vaultInitialDecryptDone,
+    sendsLoading: (sendsQuery.isFetching && !encryptedSends) || (!!encryptedSends && !sendsDecryptDone),
     users: usersQuery.data || [],
     invites: invitesQuery.data || [],
+    adminLoading: (usersQuery.isFetching && !usersQuery.data) || (invitesQuery.isFetching && !invitesQuery.data),
+    adminError: usersQuery.isError || invitesQuery.isError ? t('txt_load_admin_data_failed') : '',
     totpEnabled: !!totpStatusQuery.data?.enabled,
     lockTimeoutMinutes,
     sessionTimeoutAction,
     authorizedDevices: authorizedDevicesQuery.data || [],
     authorizedDevicesLoading: authorizedDevicesQuery.isFetching,
+    authorizedDevicesError: authorizedDevicesQuery.isError && !authorizedDevicesQuery.data ? t('txt_load_devices_failed') : '',
     onNavigate: navigate,
     onLogout: handleLogout,
     onNotify: pushToast,
@@ -1258,7 +1446,11 @@ export default function App() {
     onExportBackup: backupActions.exportBackup,
     onImportBackup: backupActions.importBackup,
     onImportBackupAllowingChecksumMismatch: backupActions.importBackupAllowingChecksumMismatch,
-    onLoadBackupSettings: backupActions.loadSettings,
+    onLoadBackupSettings: () => queryClient.ensureQueryData({
+      queryKey: ['admin-backup-settings', vaultCacheKey],
+      queryFn: () => backupActions.loadSettings(),
+      staleTime: 30_000,
+    }),
     onSaveBackupSettings: backupActions.saveSettings,
     onRunRemoteBackup: backupActions.runRemoteBackup,
     onListRemoteBackups: backupActions.listRemoteBackups,
@@ -1268,6 +1460,24 @@ export default function App() {
     onRestoreRemoteBackup: backupActions.restoreRemoteBackup,
     onRestoreRemoteBackupAllowingChecksumMismatch: backupActions.restoreRemoteBackupAllowingChecksumMismatch,
   };
+  const effectiveMainRoutesProps = IS_DEMO_MODE
+    ? createDemoMainRoutesProps(mainRoutesProps, pushToast, {
+        ciphers: decryptedCiphers,
+        folders: decryptedFolders,
+        sends: decryptedSends,
+        users: demoUsers,
+        invites: demoInvites,
+        authorizedDevices: demoAuthorizedDevices,
+        backupSettings: demoBackupSettings,
+        setCiphers: setDecryptedCiphers,
+        setFolders: setDecryptedFolders,
+        setSends: setDecryptedSends,
+        setUsers: setDemoUsers,
+        setInvites: setDemoInvites,
+        setAuthorizedDevices: setDemoAuthorizedDevices,
+        setBackupSettings: setDemoBackupSettings,
+      })
+    : mainRoutesProps;
 
   if (jwtWarning) {
     return <JwtWarningPage reason={jwtWarning.reason} minLength={jwtWarning.minLength} />;
@@ -1277,6 +1487,15 @@ export default function App() {
     return (
       <>
         <PublicSendPage accessId={decodeURIComponent(publicSendMatch[1])} keyPart={publicSendMatch[2] ? decodeURIComponent(publicSendMatch[2]) : null} />
+        {renderPassiveOverlays()}
+      </>
+    );
+  }
+
+  if (isUnknownRoute) {
+    return (
+      <>
+        <NotFoundPage />
         {renderPassiveOverlays()}
       </>
     );
@@ -1305,6 +1524,9 @@ export default function App() {
         <AuthViews
           mode={phase}
           pendingAction={pendingAuthAction}
+          relaxedLoginInput={IS_DEMO_MODE}
+          authPlaceholder={IS_DEMO_MODE ? t('txt_demo_auth_placeholder') : undefined}
+          unlockPlaceholder={IS_DEMO_MODE ? t('txt_demo_unlock_placeholder') : undefined}
           unlockReady={!!session?.email}
           unlockPreparing={unlockPreparing}
           loginValues={loginValues}
@@ -1323,6 +1545,10 @@ export default function App() {
             navigate('/login');
           }}
           onGotoRegister={() => {
+            if (IS_DEMO_MODE) {
+              pushToast('warning', t('txt_demo_readonly_message'));
+              return;
+            }
             if (inviteCodeFromUrl) {
               setRegisterValues((prev) => ({ ...prev, inviteCode: inviteCodeFromUrl }));
             }
@@ -1389,7 +1615,7 @@ export default function App() {
         onLogout={handleLogout}
         onToggleTheme={handleToggleTheme}
         onToggleMobileSidebar={() => setMobileSidebarToggleKey((key) => key + 1)}
-        mainRoutesProps={mainRoutesProps}
+        mainRoutesProps={effectiveMainRoutesProps}
       />
 
       <AppGlobalOverlays

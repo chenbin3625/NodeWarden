@@ -3,6 +3,7 @@ import { APP_VERSION } from '@shared/app-version';
 
 interface StandalonePageFrameProps {
   title: string;
+  eyebrow?: ComponentChildren;
   children: ComponentChildren;
 }
 
@@ -17,6 +18,7 @@ export default function StandalonePageFrame(props: StandalonePageFrameProps) {
       </div>
 
       <div className="auth-card">
+        {props.eyebrow && <div className="standalone-eyebrow">{props.eyebrow}</div>}
         <h1 className="standalone-title">{props.title}</h1>
         {props.children}
       </div>
@@ -26,7 +28,14 @@ export default function StandalonePageFrame(props: StandalonePageFrameProps) {
         <span> | </span>
         <a href="https://github.com/shuaiplus" target="_blank" rel="noreferrer">Author: @shuaiplus</a>
         <span> | </span>
-        <span className="standalone-version">v{APP_VERSION}</span>
+        <a
+          href="https://github.com/shuaiplus/NodeWarden/releases/latest"
+          target="_blank"
+          rel="noreferrer"
+          className="standalone-version"
+        >
+          v{APP_VERSION}
+        </a>
       </div>
     </div>
   );
