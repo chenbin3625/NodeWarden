@@ -1,4 +1,4 @@
-import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, TrustedDeviceTokenSummary, RefreshTokenRecord } from '../types';
+import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, TrustedDeviceTokenSummary, RefreshTokenRecord, CustomEquivalentDomain } from '../types';
 import { LIMITS } from '../config/limits';
 import { ensureStorageSchema } from './storage-schema';
 import {
@@ -105,10 +105,18 @@ import {
   getRevisionDate as getStoredRevisionDate,
   updateRevisionDate as updateStoredRevisionDate,
 } from './storage-revision-repo';
+import {
+  getUserDomainSettings as getStoredUserDomainSettings,
+  saveUserDomainSettings as saveStoredUserDomainSettings,
+} from './storage-domain-rules-repo';
 
 const TWO_FACTOR_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const STORAGE_SCHEMA_VERSION_KEY = 'schema.version';
-const STORAGE_SCHEMA_VERSION = '2026-04-28';
+// IMPORTANT:
+// Bump this whenever src/services/storage-schema.ts or migrations/0001_init.sql
+// changes. Existing D1 installs only rerun ensureStorageSchema() when this value
+// differs from config.schema.version.
+const STORAGE_SCHEMA_VERSION = '2026-05-05-domain-rules-v2';
 
 // D1-backed storage.
 // Contract:
@@ -268,6 +276,29 @@ export class StorageService {
 
   async createAuditLog(log: AuditLog): Promise<void> {
     await createStoredAuditLog(this.db, log);
+  }
+
+  // --- Domain rules ---
+
+  async getUserDomainSettings(userId: string) {
+    return getStoredUserDomainSettings(this.db, userId);
+  }
+
+  async saveUserDomainSettings(
+    userId: string,
+    equivalentDomains: string[][],
+    customEquivalentDomains: CustomEquivalentDomain[],
+    excludedGlobalEquivalentDomains: number[]
+  ): Promise<void> {
+    await saveStoredUserDomainSettings(
+      this.db,
+      userId,
+      equivalentDomains,
+      customEquivalentDomains,
+      excludedGlobalEquivalentDomains,
+      new Date().toISOString()
+    );
+    await this.updateRevisionDate(userId);
   }
 
   // --- Ciphers ---
