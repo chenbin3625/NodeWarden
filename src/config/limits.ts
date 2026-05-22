@@ -5,10 +5,10 @@
     accessTokenTtlSeconds: 7200,
     // Refresh token lifetime in milliseconds.
     // 刷新令牌有效期（毫秒）。
-    refreshTokenTtlMs: 30 * 24 * 60 * 60 * 1000,
+    refreshTokenTtlMs: 365 * 24 * 60 * 60 * 1000,
     // Grace window for previous refresh token after rotation (ms).
     // 刷新令牌轮换后的旧令牌宽限窗口（毫秒）。
-    refreshTokenOverlapGraceMs: 60 * 1000,
+    refreshTokenOverlapGraceMs: 30 * 60 * 1000,
     // Refresh token random byte length.
     // 刷新令牌随机字节长度。
     refreshTokenRandomBytes: 32,

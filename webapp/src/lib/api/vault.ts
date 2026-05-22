@@ -1,4 +1,4 @@
-import { base64ToBytes, decryptBw, decryptBwFileData, decryptStr, encryptBw, encryptBwFileData } from '../crypto';
+import { base64ToBytes, decryptBw, decryptBwFileData, decryptStr, encryptBw, encryptBwFileData, sha256Base64 } from '../crypto';
 import type {
   Cipher,
   CipherPasswordHistoryEntry,
@@ -18,6 +18,8 @@ import {
 } from './shared';
 import { readResponseBytesWithProgress } from '../download';
 import { loadVaultCoreSyncSnapshot } from './vault-sync';
+
+type CipherLoginData = NonNullable<Cipher['login']>;
 
 export async function getFolders(authedFetch: AuthedFetch, cacheKey: string): Promise<Folder[]> {
   const body = await loadVaultCoreSyncSnapshot(authedFetch, cacheKey);
@@ -574,12 +576,18 @@ async function encryptUris(
       entry?.extra && typeof entry.extra === 'object'
         ? { ...entry.extra }
         : {};
-    if (String(entry?.originalUri || '').trim() !== trimmed) {
+    const canReuseChecksum = String(entry?.originalUri || '').trim() === trimmed;
+    if (!canReuseChecksum) {
       delete preservedExtra.uriChecksum;
     }
+    const preservedChecksum = typeof preservedExtra.uriChecksum === 'string' && looksLikeCipherString(preservedExtra.uriChecksum)
+      ? preservedExtra.uriChecksum
+      : null;
+    const uriChecksum = preservedChecksum || await encryptTextValue(await sha256Base64(trimmed), enc, mac);
     out.push({
       ...preservedExtra,
       uri: await encryptTextValue(trimmed, enc, mac),
+      uriChecksum,
       match: typeof entry?.match === 'number' && Number.isFinite(entry.match) ? entry.match : null,
     });
   }
@@ -658,6 +666,136 @@ async function getCipherKeys(
     }
   }
   return { enc: userEnc, mac: userMac, key: null };
+}
+
+async function repairCipherLoginUris(
+  cipher: Cipher,
+  enc: Uint8Array,
+  mac: Uint8Array
+): Promise<{ login: Cipher['login']; changed: boolean }> {
+  if (!cipher.login || !Array.isArray(cipher.login.uris)) {
+    return { login: cipher.login ?? null, changed: false };
+  }
+
+  let changed = false;
+  const uris: Array<Record<string, unknown>> = [];
+
+  for (const entry of cipher.login.uris) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { decUri: _decUri, ...encryptedEntry } = entry as Record<string, unknown>;
+    const rawUri = typeof entry.uri === 'string' ? entry.uri.trim() : '';
+    if (!looksLikeCipherString(rawUri)) {
+      uris.push({ ...encryptedEntry });
+      continue;
+    }
+
+    let clearUri = String(entry.decUri || '').trim();
+    if (!clearUri || looksLikeCipherString(clearUri)) {
+      try {
+        clearUri = (await decryptStr(rawUri, enc, mac)).trim();
+      } catch {
+        uris.push({ ...encryptedEntry });
+        continue;
+      }
+    }
+
+    if (!clearUri) {
+      uris.push({ ...encryptedEntry });
+      continue;
+    }
+
+    const expectedChecksum = await sha256Base64(clearUri);
+    let currentChecksumOk = false;
+    const rawChecksum = typeof entry.uriChecksum === 'string' ? entry.uriChecksum.trim() : '';
+    if (looksLikeCipherString(rawChecksum)) {
+      try {
+        currentChecksumOk = (await decryptStr(rawChecksum, enc, mac)) === expectedChecksum;
+      } catch {
+        currentChecksumOk = false;
+      }
+    }
+
+    if (currentChecksumOk) {
+      uris.push({ ...encryptedEntry });
+      continue;
+    }
+
+    uris.push({
+      ...encryptedEntry,
+      uri: rawUri,
+      uriChecksum: await encryptTextValue(expectedChecksum, enc, mac),
+      match: typeof entry.match === 'number' && Number.isFinite(entry.match) ? entry.match : null,
+    });
+    changed = true;
+  }
+
+  const {
+    decUsername: _decUsername,
+    decPassword: _decPassword,
+    decTotp: _decTotp,
+    ...encryptedLogin
+  } = cipher.login as Record<string, unknown>;
+
+  return {
+    login: {
+      ...encryptedLogin,
+      uris: uris as CipherLoginData['uris'],
+    } as CipherLoginData,
+    changed,
+  };
+}
+
+export async function repairCipherUriChecksums(
+  authedFetch: AuthedFetch,
+  session: SessionState,
+  ciphers: Cipher[]
+): Promise<number> {
+  if (!session.symEncKey || !session.symMacKey || !Array.isArray(ciphers) || ciphers.length === 0) {
+    return 0;
+  }
+
+  const userEnc = base64ToBytes(session.symEncKey);
+  const userMac = base64ToBytes(session.symMacKey);
+  let repaired = 0;
+
+  for (const cipher of ciphers) {
+    if (!cipher?.id || cipher.type !== 1 || !looksLikeCipherString(cipher.key) || !cipher.login || !Array.isArray(cipher.login.uris)) continue;
+    let itemKey: Uint8Array;
+    try {
+      itemKey = await decryptBw(String(cipher.key).trim(), userEnc, userMac);
+    } catch {
+      continue;
+    }
+    if (itemKey.length < 64) continue;
+    const keys = { enc: itemKey.slice(0, 32), mac: itemKey.slice(32, 64), key: String(cipher.key).trim() };
+    const repair = await repairCipherLoginUris(cipher, keys.enc, keys.mac);
+    if (!repair.changed) continue;
+
+    const payload: Record<string, unknown> = {
+      type: cipher.type,
+      folderId: cipher.folderId ?? null,
+      favorite: !!cipher.favorite,
+      reprompt: cipher.reprompt ?? 0,
+      name: cipher.name ?? null,
+      notes: cipher.notes ?? null,
+      login: repair.login,
+      fields: Array.isArray(cipher.fields)
+        ? cipher.fields.map(({ decName: _decName, decValue: _decValue, ...field }) => field)
+        : null,
+      key: keys.key,
+      lastKnownRevisionDate: cipher.revisionDate ?? null,
+    };
+
+    const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipher.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Repair URI checksum failed'));
+    repaired += 1;
+  }
+
+  return repaired;
 }
 
 async function buildCipherPayload(
@@ -801,6 +939,13 @@ export async function deleteCipher(authedFetch: AuthedFetch, cipherId: string): 
   const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipherId)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error('Delete item failed');
   return (await parseJson<Cipher>(resp))!;
+}
+
+export async function permanentDeleteCipher(authedFetch: AuthedFetch, cipherId: string): Promise<void> {
+  const id = String(cipherId || '').trim();
+  if (!id) throw new Error('Cipher id is required');
+  const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(id)}/delete`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error('Permanent delete item failed');
 }
 
 export async function archiveCipher(authedFetch: AuthedFetch, cipherId: string): Promise<Cipher> {

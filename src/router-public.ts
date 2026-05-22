@@ -77,6 +77,82 @@ function handleMissingWebsiteIcon(): Response {
   });
 }
 
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a === 0
+  );
+}
+
+function isBlockedChangePasswordHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.+$/, '');
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.endsWith('.local') ||
+    normalized === '::1' ||
+    normalized.startsWith('[') ||
+    isPrivateIpv4(normalized)
+  );
+}
+
+function parsePublicHttpUrl(rawUri: string | null): URL | null {
+  if (!rawUri) return null;
+  try {
+    const url = new URL(rawUri);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (isBlockedChangePasswordHost(url.hostname)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+async function handleChangePasswordUri(request: Request): Promise<Response> {
+  const sourceUrl = parsePublicHttpUrl(new URL(request.url).searchParams.get('uri'));
+  if (!sourceUrl) {
+    return jsonResponse({ uri: null });
+  }
+
+  const wellKnownUrl = new URL('/.well-known/change-password', sourceUrl.origin);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ICON_UPSTREAM_TIMEOUT_MS);
+  try {
+    const response = await fetch(wellKnownUrl.toString(), {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+      cf: {
+        cacheEverything: true,
+        cacheTtl: LIMITS.cache.iconTtlSeconds,
+      },
+    } as RequestInit & { cf: { cacheEverything: boolean; cacheTtl: number } });
+
+    if (response.status < 300 || response.status >= 400) {
+      return jsonResponse({ uri: null });
+    }
+
+    const location = response.headers.get('Location');
+    if (!location) return jsonResponse({ uri: null });
+
+    const targetUrl = parsePublicHttpUrl(new URL(location, wellKnownUrl).toString());
+    if (!targetUrl) return jsonResponse({ uri: null });
+
+    return jsonResponse({ uri: targetUrl.toString() });
+  } catch {
+    return jsonResponse({ uri: null });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function buildIconServiceBase(origin: string): string {
   return `${origin}/icons`;
 }
@@ -282,6 +358,12 @@ export async function handlePublicRoute(
     const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
     if (blocked) return blocked;
     return jsonResponse(await buildWebBootstrapResponse(env));
+  }
+
+  if (path === '/icons/change-password-uri' && method === 'GET') {
+    const blocked = await enforcePublicRateLimit('public-read', LIMITS.rateLimit.publicReadRequestsPerMinute);
+    if (blocked) return blocked;
+    return handleChangePasswordUri(request);
   }
 
   const iconMatch = path.match(/^\/icons\/([^/]+)\/icon\.png$/i);

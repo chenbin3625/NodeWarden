@@ -667,6 +667,14 @@ export async function revokeAuthorizedDeviceTrust(
   if (!resp.ok) throw new Error(t('txt_revoke_device_trust_failed'));
 }
 
+export async function trustAuthorizedDevicePermanently(
+  authedFetch: AuthedFetch,
+  deviceIdentifier: string
+): Promise<void> {
+  const resp = await authedFetch(`/api/devices/authorized/${encodeURIComponent(deviceIdentifier)}/permanent`, { method: 'POST' });
+  if (!resp.ok) throw new Error(t('txt_trust_device_permanently_failed'));
+}
+
 export async function revokeAllAuthorizedDeviceTrust(authedFetch: AuthedFetch): Promise<void> {
   const resp = await authedFetch('/api/devices/authorized', { method: 'DELETE' });
   if (!resp.ok) throw new Error(t('txt_revoke_all_device_trust_failed'));
