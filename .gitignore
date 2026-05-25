@@ -47,3 +47,4 @@ AGENTS.md
 settings.json
 .claude/
 NodeWarden-compat/
+.codex-upstream/

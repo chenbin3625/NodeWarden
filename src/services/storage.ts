@@ -485,7 +485,6 @@ export class StorageService {
       this.db,
       this.refreshTokenKey.bind(this),
       this.maybeCleanupExpiredRefreshTokens.bind(this),
-      this.saveRefreshToken.bind(this),
       this.deleteRefreshToken.bind(this),
       token
     );

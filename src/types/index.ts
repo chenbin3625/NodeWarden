@@ -10,7 +10,6 @@ export interface Env {
   // Optional fallback for attachment/send file storage (no credit card required).
   ATTACHMENTS_KV?: KVNamespace;
   JWT_SECRET: string;
-  TOTP_SECRET?: string;
 }
 
 export type UserRole = 'admin' | 'user';

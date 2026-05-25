@@ -25,7 +25,7 @@ import {
 import { clearAuditLogs, getAuditLogSettings, listAdminInvites, listAdminUsers, listAuditLogs, saveAuditLogSettings, type AuditLogFilters } from '@/lib/api/admin';
 import { getDomainRules, saveDomainRules } from '@/lib/api/domains';
 import { getSends } from '@/lib/api/send';
-import { repairCipherUriChecksums } from '@/lib/api/vault';
+import { repairCipherKeyMismatches, repairCipherUriChecksums } from '@/lib/api/vault';
 import { getCachedVaultCoreSnapshot, loadVaultCoreSyncSnapshot } from '@/lib/api/vault-sync';
 import { silentlyRepairBackupSettingsIfNeeded } from '@/lib/backup-settings-repair';
 import {
@@ -146,7 +146,9 @@ function resolveSystemTheme(): 'light' | 'dark' {
 
 function readLockTimeoutMinutes(): LockTimeoutMinutes {
   if (typeof window === 'undefined') return 15;
-  const value = Number(window.localStorage.getItem(LOCK_TIMEOUT_STORAGE_KEY));
+  const stored = window.localStorage.getItem(LOCK_TIMEOUT_STORAGE_KEY);
+  if (stored === null || stored.trim() === '') return 15;
+  const value = Number(stored);
   return LOCK_TIMEOUT_VALUES.has(value as LockTimeoutMinutes) ? (value as LockTimeoutMinutes) : 15;
 }
 
@@ -1084,9 +1086,12 @@ export default function App() {
         const repairKey = `${session.accessToken}:${encryptedCiphers.map((cipher) => `${cipher.id}:${cipher.revisionDate || ''}`).join(',')}`;
         if (uriChecksumRepairAttemptRef.current !== repairKey) {
           uriChecksumRepairAttemptRef.current = repairKey;
-          void repairCipherUriChecksums(authedFetch, session, result.ciphers)
-            .then((count) => {
-              if (count > 0) void refetchVaultCoreData();
+          void Promise.all([
+            repairCipherKeyMismatches(authedFetch, session, result.ciphers),
+            repairCipherUriChecksums(authedFetch, session, result.ciphers),
+          ])
+            .then(([keyMismatchCount, uriChecksumCount]) => {
+              if (keyMismatchCount + uriChecksumCount > 0) void refetchVaultCoreData();
             })
             .catch(() => {
               // Best-effort compatibility repair must not interrupt normal vault loading.

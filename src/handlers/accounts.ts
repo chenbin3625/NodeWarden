@@ -731,7 +731,7 @@ export async function handleRecoverTwoFactor(request: Request, env: Env): Promis
   if (!clientIdentifier) {
     return errorResponse('Client IP is required', 403);
   }
-  const recoverLimitKey = `${clientIdentifier}:recover-2fa:${email || 'unknown'}`;
+  const recoverLimitKey = `${clientIdentifier}:recover-2fa`;
 
   const recoverAttemptCheck = await rateLimit.checkLoginAttempt(recoverLimitKey);
   if (!recoverAttemptCheck.allowed) {
